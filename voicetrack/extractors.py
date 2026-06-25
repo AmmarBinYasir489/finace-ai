@@ -120,14 +120,19 @@ def rule_based_extract(text: str, now: datetime | None = None) -> dict:
     now = now or datetime.now()
     cleaned = text.strip()
     match = re.search(r"(?<!\w)(\d+(?:,\d{3})*(?:\.\d+)?)(?!\w)", cleaned)
-    if not match:
+    amount_text = ""
+    if match:
+        amount = float(match.group(1).replace(",", ""))
+        amount_text = match.group(0)
+    else:
+        amount, amount_text = _extract_number_words(cleaned)
+    if amount is None:
         return {"error": "Could not understand input. Please rephrase."}
 
     lowered = cleaned.lower()
-    amount = float(match.group(1).replace(",", ""))
     tx_type = "income" if any(word in lowered for word in ["received", "salary", "income", "earned", "paid me", "freelance"]) else "expense"
     category = _guess_category(lowered, tx_type)
-    description = _clean_description(cleaned, match.group(0))
+    description = _clean_description(cleaned, amount_text)
     return {
         "type": tx_type,
         "amount": amount,
@@ -165,7 +170,90 @@ def _guess_category(lowered: str, tx_type: str) -> str:
 
 def _clean_description(text: str, amount_text: str) -> str:
     """Remove common command words to make a readable description."""
-    without_amount = text.replace(amount_text, " ")
-    without_amount = re.sub(r"\b(spent|paid|done|on|of|for|rs|pkr|received|got|income|expense)\b", " ", without_amount, flags=re.I)
+    without_amount = re.sub(re.escape(amount_text), " ", text, flags=re.I) if amount_text else text
+    without_amount = re.sub(r"\b(spent|paid|done|on|of|off|for|rs|pkr|rupees|received|got|income|expense)\b", " ", without_amount, flags=re.I)
     without_amount = re.sub(r"[^\w &-]+", " ", without_amount)
     return re.sub(r"\s+", " ", without_amount).strip().lower()
+
+
+NUMBER_WORDS = {
+    "zero": 0,
+    "one": 1,
+    "two": 2,
+    "three": 3,
+    "four": 4,
+    "five": 5,
+    "six": 6,
+    "seven": 7,
+    "eight": 8,
+    "nine": 9,
+    "ten": 10,
+    "eleven": 11,
+    "twelve": 12,
+    "thirteen": 13,
+    "fourteen": 14,
+    "fifteen": 15,
+    "sixteen": 16,
+    "seventeen": 17,
+    "eighteen": 18,
+    "nineteen": 19,
+    "twenty": 20,
+    "thirty": 30,
+    "forty": 40,
+    "fifty": 50,
+    "sixty": 60,
+    "seventy": 70,
+    "eighty": 80,
+    "ninety": 90,
+}
+
+SCALE_WORDS = {"hundred": 100, "thousand": 1000, "lakh": 100000}
+
+
+def _extract_number_words(text: str) -> tuple[float | None, str]:
+    """Find and parse the longest simple number-word phrase in text."""
+    words = re.findall(r"[a-zA-Z]+", text.lower().replace("-", " "))
+    best_value: int | None = None
+    best_phrase: list[str] = []
+    current: list[str] = []
+
+    for word in words:
+        if word in NUMBER_WORDS or word in SCALE_WORDS or word == "and":
+            current.append(word)
+            value = _parse_number_words(current)
+            if value is not None and len(current) > len(best_phrase):
+                best_value = value
+                best_phrase = list(current)
+        else:
+            current = []
+
+    if best_value is None:
+        return None, ""
+    return float(best_value), " ".join(best_phrase)
+
+
+def _parse_number_words(words: list[str]) -> int | None:
+    """Parse common English amount words into an integer."""
+    total = 0
+    current = 0
+    seen_number = False
+    for word in words:
+        if word == "and":
+            continue
+        if word in NUMBER_WORDS:
+            current += NUMBER_WORDS[word]
+            seen_number = True
+            continue
+        if word == "hundred":
+            current = max(current, 1) * 100
+            seen_number = True
+            continue
+        if word in {"thousand", "lakh"}:
+            total += max(current, 1) * SCALE_WORDS[word]
+            current = 0
+            seen_number = True
+            continue
+        return None
+    if not seen_number:
+        return None
+    return total + current

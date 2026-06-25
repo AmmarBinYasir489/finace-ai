@@ -191,6 +191,21 @@ class PipelineTest(unittest.TestCase):
         self.assertEqual(extracted["description"], "shopping")
         self.assertEqual(extracted["confidence"], "low")
 
+    def test_rule_based_fallback_handles_voice_number_words(self):
+        extracted = rule_based_extract("done shopping off three thousand", now=datetime(2026, 6, 25, 16, 30))
+
+        self.assertEqual(extracted["type"], "expense")
+        self.assertEqual(extracted["amount"], 3000)
+        self.assertEqual(extracted["category"], "Shopping")
+        self.assertEqual(extracted["description"], "shopping")
+        self.assertEqual(extracted["confidence"], "low")
+
+    def test_rule_based_fallback_handles_compound_number_words(self):
+        extracted = rule_based_extract("paid electricity bill one thousand five hundred")
+
+        self.assertEqual(extracted["amount"], 1500)
+        self.assertEqual(extracted["category"], "Utilities")
+
 
 if __name__ == "__main__":
     unittest.main()
