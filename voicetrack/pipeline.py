@@ -6,6 +6,7 @@ from datetime import datetime
 from typing import Callable
 
 from .constants import TRANSACTION_TYPES
+from .dates import resolve_transaction_date
 from .db import Database
 from .extractors import Extractor, category_or_other
 
@@ -61,14 +62,10 @@ def normalize_extraction(extracted: dict, original_text: str, now: datetime) -> 
     if amount_value <= 0:
         raise ExtractionError("Amount must be greater than zero.")
 
-    raw_date = str(extracted.get("date") or "today").strip().lower()
-    if raw_date in {"today", "none", "null", ""}:
-        date_value = now.date().isoformat()
-    else:
-        try:
-            date_value = datetime.strptime(raw_date, "%Y-%m-%d").date().isoformat()
-        except ValueError as exc:
-            raise ExtractionError("Date must be in YYYY-MM-DD format.") from exc
+    try:
+        date_value = resolve_transaction_date(extracted.get("date"), original_text, now)
+    except ValueError as exc:
+        raise ExtractionError("Date must be in YYYY-MM-DD format or a supported relative phrase.") from exc
 
     raw_time = extracted.get("time")
     if raw_time in {None, "", "null", "None"}:

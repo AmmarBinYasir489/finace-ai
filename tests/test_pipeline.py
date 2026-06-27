@@ -120,6 +120,7 @@ class PipelineTest(unittest.TestCase):
                 "description": "monthly salary",
                 "date": "2026-06-01",
                 "time": "10:00",
+                "created_at": "2026-06-27 12:15",
             }
         )
 
@@ -128,6 +129,7 @@ class PipelineTest(unittest.TestCase):
         self.assertEqual(row_id, 1)
         self.assertEqual(rows[0]["type"], "income")
         self.assertEqual(rows[0]["amount"], 80000)
+        self.assertEqual(rows[0]["created_at"], "2026-06-27 12:15")
 
     def test_daily_weekly_monthly_filters_are_accurate(self):
         db = self.db()
@@ -205,6 +207,39 @@ class PipelineTest(unittest.TestCase):
 
         self.assertEqual(extracted["amount"], 1500)
         self.assertEqual(extracted["category"], "Utilities")
+
+    def test_rule_based_fallback_handles_yesterday_and_soap_category(self):
+        extracted = rule_based_extract("yesterday i purchased soap for 300", now=datetime(2026, 6, 27, 10, 0))
+
+        self.assertEqual(extracted["date"], "2026-06-26")
+        self.assertEqual(extracted["category"], "Shopping")
+        self.assertEqual(extracted["amount"], 300)
+
+    def test_pipeline_normalizes_llm_relative_dates(self):
+        db = self.db()
+        pipeline = TransactionPipeline(
+            db,
+            FakeExtractor(
+                {
+                    "type": "expense",
+                    "amount": 400,
+                    "category": "Shopping",
+                    "description": "soap",
+                    "date": "yesterday",
+                    "time": None,
+                    "confidence": "high",
+                }
+            ),
+        )
+
+        saved = pipeline.process_and_save("yesterday i purchased soap for 400", now=datetime(2026, 6, 27, 10, 0))
+
+        self.assertEqual(saved["date"], "2026-06-26")
+
+    def test_rule_based_fallback_handles_last_week(self):
+        extracted = rule_based_extract("from last week i purchased soap for 300", now=datetime(2026, 6, 27, 10, 0))
+
+        self.assertEqual(extracted["date"], "2026-06-20")
 
 
 if __name__ == "__main__":

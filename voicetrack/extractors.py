@@ -12,6 +12,7 @@ from typing import Protocol
 
 from .config import Settings
 from .constants import CATEGORIES
+from .dates import resolve_transaction_date
 
 
 SYSTEM_PROMPT = """You are a financial data extraction assistant. Extract structured data from the user's natural language input and return ONLY valid JSON -- no explanation, no markdown, no preamble.
@@ -22,7 +23,7 @@ Return this exact structure:
   "amount": number (e.g. 2000),
   "category": one of [Food & Groceries, Transport, Utilities, Health, Education, Shopping, Entertainment, Rent, Salary, Freelance, Other],
   "description": short phrase describing the transaction,
-  "date": "YYYY-MM-DD" or "today" if not mentioned,
+  "date": "YYYY-MM-DD", "today", "yesterday", "last week", "last month", or "today" if not mentioned,
   "time": "HH:MM" or null if not mentioned,
   "confidence": "high" or "low"
 }
@@ -138,7 +139,7 @@ def rule_based_extract(text: str, now: datetime | None = None) -> dict:
         "amount": amount,
         "category": category,
         "description": description or category.lower(),
-        "date": "today",
+        "date": resolve_transaction_date(None, cleaned, now),
         "time": None,
         "confidence": "low",
     }
@@ -158,7 +159,7 @@ def _guess_category(lowered: str, tx_type: str) -> str:
         ("Utilities", ["electricity", "gas", "water", "internet", "bill", "utility"]),
         ("Health", ["doctor", "medicine", "hospital", "health", "clinic"]),
         ("Education", ["school", "book", "course", "tuition", "education"]),
-        ("Shopping", ["shopping", "shop", "bought", "purchase", "clothes", "shoes"]),
+        ("Shopping", ["shopping", "shop", "bought", "purchase", "purchased", "clothes", "shoes", "soap", "shampoo", "detergent", "toothpaste"]),
         ("Entertainment", ["movie", "netflix", "game", "entertainment"]),
         ("Rent", ["rent", "house payment"]),
     ]
@@ -171,7 +172,12 @@ def _guess_category(lowered: str, tx_type: str) -> str:
 def _clean_description(text: str, amount_text: str) -> str:
     """Remove common command words to make a readable description."""
     without_amount = re.sub(re.escape(amount_text), " ", text, flags=re.I) if amount_text else text
-    without_amount = re.sub(r"\b(spent|paid|done|on|of|off|for|rs|pkr|rupees|received|got|income|expense)\b", " ", without_amount, flags=re.I)
+    without_amount = re.sub(
+        r"\b(spent|paid|done|on|of|off|for|from|i|have|has|had|rs|pkr|rupees|received|got|income|expense|purchased|purchase|bought|today|yesterday|last|week|month|previous)\b",
+        " ",
+        without_amount,
+        flags=re.I,
+    )
     without_amount = re.sub(r"[^\w &-]+", " ", without_amount)
     return re.sub(r"\s+", " ", without_amount).strip().lower()
 

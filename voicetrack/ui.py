@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import threading
 import tkinter as tk
-from datetime import date
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from tkinter import filedialog, messagebox
 
@@ -20,7 +20,7 @@ from matplotlib.figure import Figure
 
 from .config import load_settings
 from .constants import CATEGORIES, DARK_THEME, LIGHT_THEME, THEME
-from .db import Database, period_to_range
+from .db import Database, DateRange, period_to_range
 from .extractors import OllamaExtractor
 from .pipeline import ExtractionError, TransactionPipeline
 from .speech import listen_until_stopped, missing_voice_dependencies
@@ -29,6 +29,19 @@ from .speech import listen_until_stopped, missing_voice_dependencies
 def money(value: float) -> str:
     """Format money without forcing a currency symbol."""
     return f"{value:,.0f}"
+
+
+def format_created_at(value: str | None) -> str:
+    """Format SQLite/Python created_at values for row details."""
+    if not value:
+        return "unknown"
+    raw = value.replace("T", " ").strip()
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"):
+        try:
+            return datetime.strptime(raw[:19], fmt).strftime("%Y-%m-%d %H:%M")
+        except ValueError:
+            continue
+    return raw[:16]
 
 
 class VoiceTrackApp(ctk.CTk):
@@ -233,8 +246,10 @@ class VoiceTrackApp(ctk.CTk):
 
         chart_card = self._card(body)
         chart_card.grid(row=0, column=0, sticky="nsew", padx=(0, 14))
-        ctk.CTkLabel(chart_card, text="Category breakdown", font=("Segoe UI", 15, "bold")).pack(anchor="w", padx=18, pady=(16, 0))
-        self._draw_category_bar(chart_card, self.database.category_breakdown(range_))
+        ctk.CTkLabel(chart_card, text=self._dashboard_chart_title(self.current_period), font=("Segoe UI", 15, "bold")).pack(
+            anchor="w", padx=18, pady=(16, 0)
+        )
+        self._draw_dashboard_spending_chart(chart_card, self._dashboard_spending_rows(self.current_period))
 
         recent_card = self._card(body)
         recent_card.grid(row=0, column=1, sticky="nsew")
@@ -284,6 +299,101 @@ class VoiceTrackApp(ctk.CTk):
         canvas.draw()
         canvas.get_tk_widget().pack(fill="both", expand=True, padx=12, pady=12)
 
+    def _dashboard_chart_title(self, period: str) -> str:
+        """Return the chart title for the current dashboard filter."""
+        if period == "week":
+            return "This week vs previous week"
+        if period == "month":
+            return "This month vs previous month"
+        if period == "today":
+            return "Today's spending"
+        return "Spending by month"
+
+    def _dashboard_spending_rows(self, period: str) -> list[dict]:
+        """Build chart rows for the selected dashboard filter."""
+        today = date.today()
+        if period == "week":
+            current = period_to_range("week", today)
+            start = date.fromisoformat(current.start)
+            end = date.fromisoformat(current.end)
+            previous = DateRange((start - timedelta(days=7)).isoformat(), (end - timedelta(days=7)).isoformat())
+            return [
+                {"label": f"Previous week\n{previous.start[-5:]} to {previous.end[-5:]}", "amount": self.database.totals(previous)["expense"]},
+                {"label": f"This week\n{current.start[-5:]} to {current.end[-5:]}", "amount": self.database.totals(current)["expense"]},
+            ]
+
+        if period == "month":
+            current_start = today.replace(day=1)
+            previous_end = current_start - timedelta(days=1)
+            previous_start = previous_end.replace(day=1)
+            current = period_to_range("month", today)
+            previous = DateRange(previous_start.isoformat(), previous_end.isoformat())
+            return [
+                {"label": f"Previous month\n{previous_start.strftime('%b %Y')}", "amount": self.database.totals(previous)["expense"]},
+                {"label": f"This month\n{current_start.strftime('%b %Y')}", "amount": self.database.totals(current)["expense"]},
+            ]
+
+        range_ = period_to_range(period)
+        rows = self.database.list_transactions(date_range=range_, tx_type="expense")
+        totals: dict[str, float] = {}
+        for row in rows:
+            key = row["date"][:7] if period == "all" else row["date"]
+            totals[key] = totals.get(key, 0.0) + float(row["amount"])
+
+        if period == "week" and range_.start and range_.end:
+            start = date.fromisoformat(range_.start)
+            end = date.fromisoformat(range_.end)
+            days = []
+            cursor = start
+            while cursor <= end:
+                key = cursor.isoformat()
+                days.append({"label": cursor.strftime("%a %d"), "amount": totals.get(key, 0.0)})
+                cursor += timedelta(days=1)
+            return days
+
+        if period == "month" and range_.start and range_.end:
+            start = date.fromisoformat(range_.start)
+            end = date.fromisoformat(range_.end)
+            days = []
+            cursor = start
+            while cursor <= end:
+                key = cursor.isoformat()
+                days.append({"label": cursor.strftime("%d"), "amount": totals.get(key, 0.0)})
+                cursor += timedelta(days=1)
+            return days
+
+        if period == "today":
+            today_key = date.today().isoformat()
+            return [{"label": date.today().strftime("%d %b"), "amount": totals.get(today_key, 0.0)}]
+
+        return [{"label": key, "amount": totals[key]} for key in sorted(totals)]
+
+    def _draw_dashboard_spending_chart(self, parent: ctk.CTkFrame, rows: list[dict]) -> None:
+        """Draw dashboard expense bars for the selected period."""
+        fig = Figure(figsize=(6.2, 3.8), dpi=100, facecolor=THEME["surface"])
+        ax = fig.add_subplot(111)
+        ax.set_facecolor(THEME["surface"])
+        visible_rows = rows if len(rows) <= 2 else ([row for row in rows if row["amount"] > 0] or rows)
+        if visible_rows:
+            labels = [row["label"] for row in visible_rows]
+            values = [row["amount"] for row in visible_rows]
+            colors = [THEME["muted"], THEME["blue"]] if len(labels) == 2 else THEME["blue"]
+            ax.bar(labels, values, color=colors)
+            ax.tick_params(axis="x", rotation=35, colors=THEME["muted"], labelsize=8)
+            ax.tick_params(axis="y", colors=THEME["muted"])
+            ax.set_ylabel("Expense", color=THEME["muted"])
+        else:
+            ax.text(0.5, 0.5, "No expenses in this period", ha="center", va="center", color=THEME["muted"], transform=ax.transAxes)
+            ax.set_xticks([])
+            ax.set_yticks([])
+        for spine in ax.spines.values():
+            spine.set_color(THEME["border"])
+        ax.grid(axis="y", color=THEME["border"], alpha=0.4)
+        fig.tight_layout()
+        canvas = FigureCanvasTkAgg(fig, master=parent)
+        canvas.draw()
+        canvas.get_tk_widget().pack(fill="both", expand=True, padx=12, pady=12)
+
     def _transaction_rows(self, parent: ctk.CTkFrame, rows: list[dict], compact: bool = False) -> None:
         """Render transaction rows used by dashboard and history."""
         if not rows:
@@ -297,7 +407,8 @@ class VoiceTrackApp(ctk.CTk):
             left = ctk.CTkFrame(frame, fg_color="transparent")
             left.pack(side="left", fill="x", expand=True, padx=12, pady=9)
             ctk.CTkLabel(left, text=row["description"], anchor="w", font=("Segoe UI", 13, "bold")).pack(anchor="w")
-            detail = f"{row['category']}  |  {row['date']} {row.get('time') or ''}"
+            transaction_time = f" {row.get('time')}" if row.get("time") else ""
+            detail = f"{row['category']}  |  Transaction: {row['date']}{transaction_time}  |  Entered: {format_created_at(row.get('created_at'))}"
             ctk.CTkLabel(left, text=detail, anchor="w", text_color=THEME["muted"], font=("Segoe UI", 11)).pack(anchor="w")
             ctk.CTkLabel(frame, text=f"{sign}{money(float(row['amount']))}", text_color=color, width=90).pack(
                 side="right", padx=8

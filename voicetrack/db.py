@@ -93,11 +93,12 @@ class Database:
 
     def add_transaction(self, item: dict) -> int:
         """Insert one validated transaction and return its row id."""
+        created_at = item.get("created_at") or datetime.now().strftime("%Y-%m-%d %H:%M")
         with self.connect() as con:
             cur = con.execute(
                 """
-                INSERT INTO transactions(type, amount, category, description, date, time)
-                VALUES (?, ?, ?, ?, ?, ?)
+                INSERT INTO transactions(type, amount, category, description, date, time, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     item["type"],
@@ -106,6 +107,7 @@ class Database:
                     item.get("description", ""),
                     item["date"],
                     item.get("time"),
+                    created_at,
                 ),
             )
             return int(cur.lastrowid)
