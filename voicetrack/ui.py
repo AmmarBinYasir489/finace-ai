@@ -44,6 +44,24 @@ def format_created_at(value: str | None) -> str:
     return raw[:16]
 
 
+def category_label(name: str) -> str:
+    """Short display name for the app's fixed category set."""
+    aliases = {
+        "Food & Groceries": "Food",
+        "Transport": "Transportation",
+        "Utilities": "Utilities",
+        "Health": "Health",
+        "Education": "Education",
+        "Shopping": "Shopping",
+        "Entertainment": "Entertainment",
+        "Rent": "Housing",
+        "Salary": "Salary",
+        "Freelance": "Freelance",
+        "Other": "Other",
+    }
+    return aliases.get(name, name)
+
+
 class VoiceTrackApp(ctk.CTk):
     """Main desktop window with dashboard, entry, history, and reports."""
 
@@ -67,8 +85,8 @@ class VoiceTrackApp(ctk.CTk):
         ctk.set_appearance_mode("Dark")
         ctk.set_default_color_theme("blue")
         self.title("VoiceTrack")
-        self.geometry("1100x720")
-        self.minsize(980, 640)
+        self.geometry("1280x780")
+        self.minsize(1100, 680)
         self.configure(fg_color=THEME["background"])
 
         self.grid_columnconfigure(1, weight=1)
@@ -83,60 +101,71 @@ class VoiceTrackApp(ctk.CTk):
 
     def _build_sidebar(self) -> None:
         """Build the left navigation column from the HTML reference."""
-        sidebar = ctk.CTkFrame(self, width=220, fg_color=THEME["background"], corner_radius=0)
+        sidebar = ctk.CTkFrame(self, width=300, fg_color=THEME["background"], corner_radius=0)
         self.sidebar = sidebar
         sidebar.grid(row=0, column=0, sticky="ns")
         sidebar.grid_propagate(False)
 
-        brand = ctk.CTkFrame(sidebar, fg_color="transparent")
-        brand.pack(fill="x", padx=16, pady=(22, 18))
-        logo = ctk.CTkLabel(
-            brand,
+        panel = ctk.CTkFrame(sidebar, fg_color=THEME["surface"], corner_radius=8)
+        panel.pack(fill="both", expand=True, padx=(24, 18), pady=(96, 24))
+
+        avatar = ctk.CTkLabel(
+            panel,
             text="VT",
-            width=48,
-            height=34,
+            width=78,
+            height=78,
             fg_color=THEME["blue"],
-            corner_radius=10,
+            corner_radius=39,
             text_color="#FFFFFF",
-            font=("Segoe UI", 15, "bold"),
+            font=("Segoe UI", 24, "bold"),
         )
-        self.logo = logo
-        logo.pack(side="left")
-        ctk.CTkLabel(brand, text="VoiceTrack", font=("Segoe UI", 18, "bold"), text_color=THEME["text"]).pack(
-            side="left", padx=10
-        )
+        self.logo = avatar
+        avatar.pack(pady=(24, 12))
+        ctk.CTkLabel(panel, text="Welcome!", font=("Segoe UI", 22, "bold"), text_color=THEME["text"]).pack(pady=(0, 26))
 
         self.nav_buttons: dict[str, ctk.CTkButton] = {}
         for key, label, command in [
             ("dashboard", "Dashboard", self.show_dashboard),
             ("add_entry", "Add Entry", self.show_add_entry),
-            ("history", "History", self.show_history),
+            ("history", "Transactions", self.show_history),
             ("reports", "Reports", self.show_reports),
         ]:
             button = ctk.CTkButton(
-                sidebar,
+                panel,
                 text=label,
                 anchor="w",
-                height=40,
+                height=48,
                 corner_radius=8,
                 fg_color="transparent",
                 hover_color=THEME["nav_hover"],
                 text_color=THEME["muted"],
-                font=("Segoe UI", 14),
+                font=("Segoe UI", 16, "bold"),
                 command=command,
             )
-            button.pack(fill="x", padx=16, pady=3)
+            button.pack(fill="x", padx=22, pady=5)
             self.nav_buttons[key] = button
 
+        ctk.CTkButton(
+            panel,
+            text="Export Data",
+            height=36,
+            fg_color="transparent",
+            border_width=1,
+            border_color=THEME["border"],
+            hover_color=THEME["nav_hover"],
+            text_color=THEME["text"],
+            command=self._export_csv,
+        ).pack(side="bottom", fill="x", padx=22, pady=(8, 12))
+
         self.db_label = ctk.CTkLabel(
-            sidebar,
+            panel,
             text=f"Database\n{self.database.path}",
             text_color=THEME["muted"],
             font=("Segoe UI", 11),
             justify="left",
-            wraplength=175,
+            wraplength=210,
         )
-        self.db_label.pack(side="bottom", padx=16, pady=18, fill="x")
+        self.db_label.pack(side="bottom", padx=22, pady=(8, 0), fill="x")
 
     def _set_active_nav(self, key: str) -> None:
         """Highlight the active navigation item."""
@@ -157,11 +186,8 @@ class VoiceTrackApp(ctk.CTk):
         ctk.set_appearance_mode("Light" if self.theme_mode == "light" else "Dark")
         self.configure(fg_color=THEME["background"])
         if self.sidebar:
-            self.sidebar.configure(fg_color=THEME["background"])
-        if self.logo:
-            self.logo.configure(fg_color=THEME["blue"])
-        if self.db_label:
-            self.db_label.configure(text_color=THEME["muted"])
+            self.sidebar.destroy()
+        self._build_sidebar()
         self.main.configure(fg_color=THEME["background"])
         self._redraw_current_screen()
 
@@ -187,8 +213,33 @@ class VoiceTrackApp(ctk.CTk):
     def _screen_header(self, parent: ctk.CTkFrame, title: str) -> None:
         """Draw a reusable page header."""
         header = ctk.CTkFrame(parent, fg_color="transparent")
-        header.pack(fill="x", pady=(0, 18))
-        ctk.CTkLabel(header, text=title, font=("Segoe UI", 22, "bold"), text_color=THEME["text"]).pack(side="left")
+        header.pack(fill="x", pady=(0, 26))
+        brand = ctk.CTkFrame(header, fg_color="transparent")
+        brand.pack(side="left")
+        brand_row = ctk.CTkFrame(brand, fg_color="transparent")
+        brand_row.pack(anchor="w")
+        ctk.CTkLabel(
+            brand_row,
+            text="VT",
+            width=34,
+            height=28,
+            fg_color=THEME["blue"],
+            corner_radius=6,
+            text_color="#FFFFFF",
+            font=("Segoe UI", 12, "bold"),
+        ).pack(side="left", padx=(0, 10))
+        ctk.CTkLabel(
+            brand_row,
+            text="Income and Expense Tracker",
+            font=("Segoe UI", 30, "bold"),
+            text_color=THEME["blue"],
+        ).pack(side="left")
+        ctk.CTkLabel(
+            brand,
+            text=f"Take control of your finances  /  {title}",
+            text_color=THEME["muted"],
+            font=("Segoe UI", 14),
+        ).pack(anchor="w", pady=(4, 0))
         ctk.CTkSwitch(
             header,
             text="Light mode",
@@ -210,21 +261,24 @@ class VoiceTrackApp(ctk.CTk):
         self._set_active_nav("dashboard")
         self._clear_main()
         page = ctk.CTkFrame(self.main, fg_color=THEME["background"], corner_radius=0)
-        page.pack(fill="both", expand=True, padx=24, pady=24)
+        page.pack(fill="both", expand=True, padx=(8, 28), pady=24)
         self._screen_header(page, "Dashboard")
 
-        range_ = period_to_range(self.current_period)
-        totals = self.database.totals(range_)
+        month_range = period_to_range("month")
+        month_totals = self.database.totals(month_range)
+        all_totals = self.database.totals()
+        savings_rate = (month_totals["net"] / month_totals["income"] * 100) if month_totals["income"] else 0.0
 
         cards = ctk.CTkFrame(page, fg_color="transparent")
-        cards.pack(fill="x", pady=(0, 14))
-        cards.grid_columnconfigure((0, 1, 2), weight=1, uniform="metric")
-        self._metric_card(cards, 0, "Income", totals["income"], THEME["green"])
-        self._metric_card(cards, 1, "Expenses", totals["expense"], THEME["red"])
-        self._metric_card(cards, 2, "Net Balance", totals["net"], THEME["blue"])
+        cards.pack(fill="x", pady=(0, 18))
+        cards.grid_columnconfigure((0, 1, 2, 3), weight=1, uniform="metric")
+        self._metric_card(cards, 0, "Total Balance", all_totals["net"], THEME["text"])
+        self._metric_card(cards, 1, "Monthly Income", month_totals["income"], THEME["cyan"])
+        self._metric_card(cards, 2, "Monthly Expenses", month_totals["expense"], THEME["red"])
+        self._metric_card(cards, 3, "Savings Rate", savings_rate, THEME["text"], suffix="%")
 
         filters = ctk.CTkFrame(page, fg_color="transparent")
-        filters.pack(fill="x", pady=(0, 14))
+        filters.pack(fill="x", pady=(0, 16))
         for key, label in [("today", "Today"), ("week", "This Week"), ("month", "This Month"), ("all", "All")]:
             ctk.CTkButton(
                 filters,
@@ -240,32 +294,35 @@ class VoiceTrackApp(ctk.CTk):
 
         body = ctk.CTkFrame(page, fg_color="transparent")
         body.pack(fill="both", expand=True)
-        body.grid_columnconfigure(0, weight=3)
-        body.grid_columnconfigure(1, weight=2)
+        body.grid_columnconfigure((0, 1), weight=1, uniform="dashboard")
         body.grid_rowconfigure(0, weight=1)
 
-        chart_card = self._card(body)
-        chart_card.grid(row=0, column=0, sticky="nsew", padx=(0, 14))
-        ctk.CTkLabel(chart_card, text=self._dashboard_chart_title(self.current_period), font=("Segoe UI", 15, "bold")).pack(
+        category_card = self._card(body)
+        category_card.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
+        ctk.CTkLabel(category_card, text="Spending by Category", font=("Segoe UI", 20, "bold"), text_color=THEME["blue"]).pack(
             anchor="w", padx=18, pady=(16, 0)
         )
-        self._draw_dashboard_spending_chart(chart_card, self._dashboard_spending_rows(self.current_period))
+        self._draw_category_donut(category_card, self.database.category_breakdown(month_range))
 
-        recent_card = self._card(body)
-        recent_card.grid(row=0, column=1, sticky="nsew")
-        ctk.CTkLabel(recent_card, text="Recent transactions", font=("Segoe UI", 15, "bold")).pack(
-            anchor="w", padx=18, pady=(16, 8)
+        overview_card = self._card(body)
+        overview_card.grid(row=0, column=1, sticky="nsew", padx=(10, 0))
+        ctk.CTkLabel(
+            overview_card,
+            text=self._dashboard_chart_title(self.current_period),
+            font=("Segoe UI", 20, "bold"),
+            text_color=THEME["blue"],
+        ).pack(
+            anchor="w", padx=18, pady=(16, 0)
         )
-        scroll = ctk.CTkScrollableFrame(recent_card, fg_color="transparent")
-        scroll.pack(fill="both", expand=True, padx=12, pady=(0, 12))
-        self._transaction_rows(scroll, self.database.list_transactions(date_range=range_, limit=10), compact=True)
+        self._draw_dashboard_spending_chart(overview_card, self._dashboard_spending_rows(self.current_period))
 
-    def _metric_card(self, parent: ctk.CTkFrame, col: int, title: str, value: float, color: str) -> None:
+    def _metric_card(self, parent: ctk.CTkFrame, col: int, title: str, value: float, color: str, suffix: str = "") -> None:
         """Render one dashboard metric."""
         card = self._card(parent)
-        card.grid(row=0, column=col, sticky="ew", padx=(0 if col == 0 else 8, 0 if col == 2 else 8))
-        ctk.CTkLabel(card, text=title, text_color=THEME["muted"], font=("Segoe UI", 12)).pack(anchor="w", padx=18, pady=(14, 3))
-        ctk.CTkLabel(card, text=money(value), text_color=color, font=("Segoe UI", 24, "bold")).pack(anchor="w", padx=18, pady=(0, 14))
+        card.grid(row=0, column=col, sticky="ew", padx=(0 if col == 0 else 8, 0 if col == 3 else 8))
+        ctk.CTkLabel(card, text=title, text_color=THEME["muted"], font=("Segoe UI", 15, "bold")).pack(anchor="w", padx=18, pady=(18, 8))
+        display_value = f"{value:.1f}{suffix}" if suffix else money(value)
+        ctk.CTkLabel(card, text=display_value, text_color=color, font=("Segoe UI", 24, "bold")).pack(anchor="w", padx=18, pady=(0, 18))
 
     def _card(self, parent: ctk.CTkFrame) -> ctk.CTkFrame:
         """Create a standard surface card."""
@@ -294,6 +351,34 @@ class VoiceTrackApp(ctk.CTk):
         for spine in ax.spines.values():
             spine.set_color(THEME["border"])
         ax.grid(axis="y", color=THEME["border"], alpha=0.4)
+        fig.tight_layout()
+        canvas = FigureCanvasTkAgg(fig, master=parent)
+        canvas.draw()
+        canvas.get_tk_widget().pack(fill="both", expand=True, padx=12, pady=12)
+
+    def _draw_category_donut(self, parent: ctk.CTkFrame, rows: list[dict]) -> None:
+        """Draw a reference-style donut chart for category spending."""
+        fig = Figure(figsize=(5.6, 4.5), dpi=100, facecolor=THEME["surface"])
+        ax = fig.add_subplot(111)
+        ax.set_facecolor(THEME["surface"])
+        if rows:
+            values = [row["amount"] for row in rows]
+            labels = [category_label(row["category"]) for row in rows]
+            colors = [THEME["pink"], THEME["cyan"], THEME["yellow"], THEME["teal"], THEME["purple"], THEME["blue"]]
+            ax.pie(
+                values,
+                labels=labels,
+                colors=colors[: len(values)],
+                startangle=90,
+                counterclock=False,
+                wedgeprops={"width": 0.42, "edgecolor": THEME["surface"]},
+                textprops={"color": THEME["text"], "fontsize": 9},
+            )
+            total = sum(values)
+            ax.text(0, 0.04, "Total", ha="center", va="center", color=THEME["muted"], fontsize=10)
+            ax.text(0, -0.08, money(total), ha="center", va="center", color=THEME["text"], fontsize=15, fontweight="bold")
+        else:
+            ax.text(0.5, 0.5, "No category spending yet", ha="center", va="center", color=THEME["muted"], transform=ax.transAxes)
         fig.tight_layout()
         canvas = FigureCanvasTkAgg(fig, master=parent)
         canvas.draw()
@@ -648,8 +733,8 @@ class VoiceTrackApp(ctk.CTk):
         self._set_active_nav("history")
         self._clear_main()
         page = ctk.CTkFrame(self.main, fg_color=THEME["background"], corner_radius=0)
-        page.pack(fill="both", expand=True, padx=24, pady=24)
-        self._screen_header(page, "History")
+        page.pack(fill="both", expand=True, padx=(8, 28), pady=24)
+        self._screen_header(page, "Transactions")
 
         filters = ctk.CTkFrame(page, fg_color="transparent")
         filters.pack(fill="x", pady=(0, 12))
@@ -681,7 +766,77 @@ class VoiceTrackApp(ctk.CTk):
             tx_type=self.history_type.get(),
             category=self.history_category.get(),
         )
-        self._transaction_rows(self.history_list, rows, compact=False)
+        self._transaction_table(self.history_list, rows)
+
+    def _transaction_table(self, parent: ctk.CTkFrame, rows: list[dict]) -> None:
+        """Render history as a table similar to the reference interface."""
+        if not rows:
+            ctk.CTkLabel(parent, text="No transactions found", text_color=THEME["muted"]).pack(pady=30)
+            return
+
+        table = ctk.CTkFrame(parent, fg_color="transparent")
+        table.pack(fill="x", padx=16, pady=14)
+        widths = [0, 1, 2, 3, 4, 5]
+        for col in widths:
+            table.grid_columnconfigure(col, weight=1 if col in {1, 2} else 0)
+
+        header = ctk.CTkFrame(table, fg_color=THEME["border"], corner_radius=0)
+        header.grid(row=0, column=0, columnspan=6, sticky="ew")
+        for col, text, width in [
+            (0, "Date", 150),
+            (1, "Description", 230),
+            (2, "Category", 180),
+            (3, "Type", 120),
+            (4, "Amount", 130),
+            (5, "Actions", 110),
+        ]:
+            ctk.CTkLabel(
+                header,
+                text=text,
+                width=width,
+                anchor="w",
+                text_color=THEME["blue"],
+                font=("Segoe UI", 14, "bold"),
+            ).grid(row=0, column=col, padx=14, pady=12, sticky="w")
+
+        for row_index, row in enumerate(rows, start=1):
+            grid_row = (row_index * 2) - 1
+            frame = ctk.CTkFrame(table, fg_color="transparent", corner_radius=0)
+            frame.grid(row=grid_row, column=0, columnspan=6, sticky="ew")
+            frame.grid_columnconfigure(1, weight=1)
+            frame.grid_columnconfigure(2, weight=1)
+            amount_color = THEME["green"] if row["type"] == "income" else THEME["red"]
+            sign = "+" if row["type"] == "income" else "-"
+            transaction_time = f" {row.get('time')}" if row.get("time") else ""
+            date_text = f"{row['date']}{transaction_time}\nEntered {format_created_at(row.get('created_at'))}"
+            values = [
+                (date_text, 150, THEME["text"]),
+                (row["description"], 230, THEME["text"]),
+                (category_label(row["category"]), 180, THEME["text"]),
+                (row["type"].title(), 120, THEME["green"] if row["type"] == "income" else THEME["red"]),
+                (f"{sign}{money(float(row['amount']))}", 130, amount_color),
+            ]
+            for col, (text, width, color) in enumerate(values):
+                ctk.CTkLabel(
+                    frame,
+                    text=text,
+                    width=width,
+                    anchor="w",
+                    justify="left",
+                    text_color=color,
+                    font=("Segoe UI", 13, "bold" if col in {1, 3, 4} else "normal"),
+                ).grid(row=0, column=col, padx=14, pady=10, sticky="w")
+            ctk.CTkButton(
+                frame,
+                text="Delete",
+                width=80,
+                height=28,
+                fg_color="transparent",
+                hover_color=THEME["danger_hover"],
+                text_color=THEME["red"],
+                command=lambda row_id=row["id"]: self._delete_transaction(row_id),
+            ).grid(row=0, column=5, padx=14, pady=10, sticky="w")
+            ctk.CTkFrame(table, height=1, fg_color=THEME["border"]).grid(row=grid_row + 1, column=0, columnspan=6, sticky="ew")
 
     def _delete_transaction(self, row_id: int) -> None:
         """Ask before deleting a row."""
@@ -698,11 +853,16 @@ class VoiceTrackApp(ctk.CTk):
         self._set_active_nav("reports")
         self._clear_main()
         page = ctk.CTkFrame(self.main, fg_color=THEME["background"], corner_radius=0)
-        page.pack(fill="both", expand=True, padx=24, pady=24)
+        page.pack(fill="both", expand=True, padx=(8, 28), pady=24)
         self._screen_header(page, "Reports")
 
+        ctk.CTkLabel(page, text="Category Spending", font=("Segoe UI", 20, "bold"), text_color=THEME["blue"]).pack(
+            anchor="w", pady=(0, 10)
+        )
+        self._category_spending_cards(page, self.database.category_breakdown(period_to_range("month")))
+
         body = ctk.CTkFrame(page, fg_color="transparent")
-        body.pack(fill="both", expand=True)
+        body.pack(fill="both", expand=True, pady=(14, 0))
         body.grid_columnconfigure((0, 1), weight=1, uniform="reports")
         body.grid_rowconfigure(0, weight=1)
 
@@ -717,6 +877,24 @@ class VoiceTrackApp(ctk.CTk):
         self._draw_monthly_bar(bar_card, self.database.monthly_income_expense(6))
 
         ctk.CTkButton(page, text="Export to CSV", width=150, command=self._export_csv).pack(anchor="e", pady=(14, 0))
+
+    def _category_spending_cards(self, parent: ctk.CTkFrame, rows: list[dict]) -> None:
+        """Show category spending as small data cards."""
+        wrap = ctk.CTkFrame(parent, fg_color="transparent")
+        wrap.pack(fill="x")
+        for col in range(4):
+            wrap.grid_columnconfigure(col, weight=1, uniform="category")
+        display_rows = rows[:8] or [{"category": "No spending", "amount": 0.0}]
+        colors = [THEME["pink"], THEME["cyan"], THEME["yellow"], THEME["teal"], THEME["purple"], THEME["blue"]]
+        for index, row in enumerate(display_rows):
+            card = self._card(wrap)
+            card.grid(row=index // 4, column=index % 4, sticky="ew", padx=(0 if index % 4 == 0 else 8, 8), pady=6)
+            accent = colors[index % len(colors)]
+            ctk.CTkFrame(card, width=38, height=38, fg_color=accent, corner_radius=19).pack(side="left", padx=14, pady=16)
+            text = ctk.CTkFrame(card, fg_color="transparent")
+            text.pack(side="left", fill="x", expand=True, pady=12)
+            ctk.CTkLabel(text, text=category_label(row["category"]), text_color=THEME["text"], font=("Segoe UI", 15, "bold")).pack(anchor="w")
+            ctk.CTkLabel(text, text=f"Spent: {money(float(row['amount']))}", text_color=THEME["muted"], font=("Segoe UI", 12)).pack(anchor="w")
 
     def _draw_category_pie(self, parent: ctk.CTkFrame, rows: list[dict]) -> None:
         """Draw a category pie chart for the current month."""
