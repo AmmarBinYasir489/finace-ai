@@ -363,23 +363,35 @@ class VoiceTrackApp(ctk.CTk):
         ax.set_facecolor(THEME["surface"])
         if rows:
             values = [row["amount"] for row in rows]
-            labels = [category_label(row["category"]) for row in rows]
+            labels = [f"{category_label(row['category'])}  {money(float(row['amount']))}" for row in rows]
             colors = [THEME["pink"], THEME["cyan"], THEME["yellow"], THEME["teal"], THEME["purple"], THEME["blue"]]
-            ax.pie(
+            slice_colors = [colors[index % len(colors)] for index in range(len(values))]
+            wedges, _ = ax.pie(
                 values,
-                labels=labels,
-                colors=colors[: len(values)],
+                labels=None,
+                colors=slice_colors,
                 startangle=90,
                 counterclock=False,
                 wedgeprops={"width": 0.42, "edgecolor": THEME["surface"]},
-                textprops={"color": THEME["text"], "fontsize": 9},
             )
             total = sum(values)
             ax.text(0, 0.04, "Total", ha="center", va="center", color=THEME["muted"], fontsize=10)
             ax.text(0, -0.08, money(total), ha="center", va="center", color=THEME["text"], fontsize=15, fontweight="bold")
+            ax.legend(
+                wedges,
+                labels,
+                loc="center left",
+                bbox_to_anchor=(0.94, 0.5),
+                frameon=False,
+                labelcolor=THEME["text"],
+                fontsize=8,
+                handlelength=1.1,
+                handletextpad=0.6,
+            )
         else:
             ax.text(0.5, 0.5, "No category spending yet", ha="center", va="center", color=THEME["muted"], transform=ax.transAxes)
-        fig.tight_layout()
+        ax.set_aspect("equal")
+        fig.subplots_adjust(left=0.04, right=0.74, top=0.94, bottom=0.06)
         canvas = FigureCanvasTkAgg(fig, master=parent)
         canvas.draw()
         canvas.get_tk_widget().pack(fill="both", expand=True, padx=12, pady=12)
