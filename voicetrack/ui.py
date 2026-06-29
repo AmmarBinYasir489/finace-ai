@@ -181,7 +181,7 @@ class VoiceTrackApp(ctk.CTk):
 
     def _build_sidebar(self):
         global _sb_frame
-        self._sb = ctk.CTkFrame(self, width=200, corner_radius=0,
+        self._sb = ctk.CTkFrame(self, width=52, corner_radius=0,
                                  fg_color=C("sidebar"))
         self._sb.pack(side="left", fill="y")
         self._sb.pack_propagate(False)
@@ -192,7 +192,7 @@ class VoiceTrackApp(ctk.CTk):
 
         # Logo
         logo_wrap = ctk.CTkFrame(self._sb, fg_color="transparent")
-        logo_wrap.pack(fill="x", padx=16, pady=(20, 16))
+        logo_wrap.pack(fill="x", padx=7, pady=(18, 18))
 
         logo_ic = ctk.CTkFrame(logo_wrap, fg_color=C("accent_dim"),
                                corner_radius=12, width=38, height=38)
@@ -201,7 +201,7 @@ class VoiceTrackApp(ctk.CTk):
         _lbl(logo_ic, "🎙", size=18).pack(expand=True)
 
         name_col = ctk.CTkFrame(logo_wrap, fg_color="transparent")
-        name_col.pack(side="left", padx=(10, 0))
+        name_col.pack_forget()
         _lbl(name_col, "VoiceTrack", size=15, weight="bold",
              color=C("text")).pack(anchor="w")
         _lbl(name_col, "Finance Tracker", size=10,
@@ -222,17 +222,18 @@ class VoiceTrackApp(ctk.CTk):
         for icon, label, panel in nav:
             btn = ctk.CTkButton(
                 self._sb,
-                text=f"  {icon}   {label}",
-                anchor="w",
+                text=icon,
+                anchor="center",
                 corner_radius=10,
-                height=40,
+                width=36,
+                height=36,
                 fg_color="transparent",
                 hover_color=C("hover"),
                 text_color=C("text2"),
                 font=ctk.CTkFont(size=13),
                 command=lambda p=panel: self._show_panel(p),
             )
-            btn.pack(fill="x", padx=10, pady=2)
+            btn.pack(padx=8, pady=5)
             self._nav_btns[panel] = btn
 
         # Bottom: theme toggle + settings
@@ -243,22 +244,21 @@ class VoiceTrackApp(ctk.CTk):
 
         # Theme toggle
         tog_row = ctk.CTkFrame(self._sb, fg_color="transparent")
-        tog_row.pack(side="bottom", fill="x", padx=16, pady=(0, 8))
-        _lbl(tog_row, "🌙 Dark", size=12, color=C("text2")).pack(side="left")
+        tog_row.pack(side="bottom", fill="x", padx=6, pady=(0, 8))
         self._theme_sw = ctk.CTkSwitch(
             tog_row, text="", width=40,
             button_color=C("accent"), button_hover_color=C("accent_h"),
             progress_color=C("accent_dim"),
             command=self._toggle_theme,
         )
-        self._theme_sw.pack(side="right")
+        self._theme_sw.pack(anchor="center")
 
         ctk.CTkButton(
-            self._sb, text="  ⚙️   Settings",
-            anchor="w", corner_radius=10, height=36,
+            self._sb, text="⚙",
+            anchor="center", corner_radius=10, width=36, height=36,
             fg_color="transparent", hover_color=C("hover"),
             text_color=C("text3"), font=ctk.CTkFont(size=12),
-        ).pack(side="bottom", fill="x", padx=10, pady=(0, 4))
+        ).pack(side="bottom", padx=8, pady=(0, 8))
 
     def _set_active_nav(self, panel: str):
         for p, btn in self._nav_btns.items():
@@ -852,13 +852,13 @@ class VoiceTrackApp(ctk.CTk):
 
         # Input card
         card = _card(panel)
-        card.pack(fill="x", padx=28, pady=16)
+        card.pack(fill="x", padx=28, pady=(28, 14))
 
         top_card = ctk.CTkFrame(card, fg_color="transparent")
-        top_card.pack(fill="x", padx=18, pady=(18, 6))
+        top_card.pack(fill="x", padx=14, pady=(14, 4))
         _lbl(top_card, "Describe your transaction",
              size=13, weight="bold").pack(side="left")
-        _lbl(top_card, "Ctrl+Enter to process",
+        _lbl(top_card, "Examples: loans, shared bills, income, expenses",
              size=11, color=C("text3")).pack(side="right")
 
         # Text input with accent border on focus
@@ -866,19 +866,32 @@ class VoiceTrackApp(ctk.CTk):
                                   corner_radius=10,
                                   border_width=1,
                                   border_color=C("border"))
-        input_wrap.pack(fill="x", padx=18, pady=(0, 12))
+        input_wrap.pack(fill="x", padx=12, pady=12)
 
         self._input_box = ctk.CTkTextbox(
-            input_wrap, height=90, corner_radius=10,
+            input_wrap, height=42, corner_radius=10,
             fg_color="transparent", border_width=0,
             text_color=C("text"),
             font=ctk.CTkFont(size=14),
             wrap="word",
         )
         self._input_box.pack(fill="x", padx=4, pady=4)
+        self._input_placeholder = _lbl(
+            input_wrap,
+            "Type naturally, e.g. “I lent Ali 5000” or “cab 500 and dinner 900 split equally”",
+            size=12,
+            color=C("text3"),
+        )
+        self._input_placeholder.place(x=18, y=15)
+        self._input_box.bind("<KeyRelease>", self._sync_input_placeholder)
+        self._input_box.bind("<FocusIn>", self._sync_input_placeholder)
+        self._input_box.bind("<FocusOut>", self._sync_input_placeholder)
+        self._input_placeholder.configure(
+            text="Type naturally, e.g. 'I lent Ali 5000' or 'cab 500 and dinner 900 split equally'"
+        )
 
         hint_row = ctk.CTkFrame(card, fg_color="transparent")
-        hint_row.pack(fill="x", padx=18, pady=(0, 4))
+        hint_row.pack(fill="x", padx=14, pady=(0, 8))
         hints = [
             ('🛒', '"spent 500 on groceries yesterday"'),
             ('💰', '"received salary 50000 last month"'),
@@ -891,31 +904,38 @@ class VoiceTrackApp(ctk.CTk):
             _lbl(chip, f"{icon} {text}", size=10,
                  color=C("text3")).pack(padx=8, pady=4)
 
+        help_text = (
+            "You can enter normal expenses, income, loans, repayments, "
+            "or shared bills in one sentence."
+        )
+        _lbl(card, help_text, size=11, color=C("text3")).pack(
+            anchor="w", padx=16, pady=(0, 8))
+
         # Buttons
         btn_row = ctk.CTkFrame(card, fg_color="transparent")
-        btn_row.pack(fill="x", padx=18, pady=(0, 18))
+        btn_row.pack(fill="x", padx=12, pady=(0, 12))
 
         self._process_btn = ctk.CTkButton(
-            btn_row, text="▶  Process", width=140, height=38,
+            btn_row, text="→", width=48, height=34,
             corner_radius=10,
             fg_color=C("accent"), hover_color=C("accent_h"),
             text_color="#ffffff",
             font=ctk.CTkFont(size=13, weight="bold"),
             command=self._process_input,
         )
-        self._process_btn.pack(side="left", padx=(0, 12))
+        self._process_btn.pack(side="right", padx=(8, 0))
 
         self._spinner_label = _lbl(btn_row, "", size=13, color=C("accent"))
         self._spinner_label.pack(side="left")
 
         self._mic_btn = ctk.CTkButton(
-            btn_row, text="🎙  Microphone", width=140, height=38,
+            btn_row, text="Mic", width=70, height=34,
             corner_radius=10,
             fg_color=C("surface2"), hover_color=C("surface3"),
             text_color=C("text2"),
             command=self._toggle_mic,
         )
-        self._mic_btn.pack(side="left", padx=8)
+        self._mic_btn.pack(side="left", padx=(0, 8))
 
         self._voice_status = _lbl(btn_row, "", size=11, color=C("text3"))
         self._voice_status.pack(side="left")
@@ -933,6 +953,15 @@ class VoiceTrackApp(ctk.CTk):
         self._init_voice()
         self.bind("<Control-Return>", lambda _e: self._process_input())
         return panel
+
+    def _sync_input_placeholder(self, _event=None):
+        if not hasattr(self, "_input_placeholder"):
+            return
+        text = self._input_box.get("1.0", "end").strip()
+        if text:
+            self._input_placeholder.place_forget()
+        else:
+            self._input_placeholder.place(x=18, y=15)
 
     def _init_voice(self):
         try:
@@ -959,13 +988,13 @@ class VoiceTrackApp(ctk.CTk):
             self._voice_recorder.start()
             self._recording = True
             self._mic_btn.configure(
-                text="⏹  Stop Recording",
+                text="Stop",
                 fg_color=C("danger_bg"), text_color=C("danger"))
         else:
             self._voice_recorder.stop()
             self._recording = False
             self._mic_btn.configure(
-                text="🎙  Microphone",
+                text="Mic",
                 fg_color=C("surface2"), text_color=C("text2"))
 
     def _on_voice_result(self, text: str):
@@ -1206,6 +1235,9 @@ class VoiceTrackApp(ctk.CTk):
         hdr = ctk.CTkFrame(panel, fg_color="transparent")
         hdr.pack(fill="x", padx=28, pady=(22, 0))
         _lbl(hdr, "Reports", size=22, weight="bold").pack(side="left")
+        for text in ["This Year", "Last 3 Months", "This Month"]:
+            _btn(hdr, text, width=105, height=30,
+                 style="ghost").pack(side="right", padx=(6, 0))
         _btn(hdr, "⬇  Export CSV", command=self._export_csv,
              width=120, height=32, style="ghost").pack(side="right")
 
@@ -1221,6 +1253,35 @@ class VoiceTrackApp(ctk.CTk):
         for w in self._report_scroll.winfo_children():
             w.destroy()
         monthly = db.get_monthly_totals(6)
+        categories = db.get_category_totals("expense")
+
+        row = ctk.CTkFrame(self._report_scroll, fg_color="transparent")
+        row.pack(fill="both", expand=True)
+
+        left = _card(row)
+        left.pack(side="left", fill="both", expand=True, padx=(0, 8), pady=8)
+        _lbl(left, "Spending by category", size=13,
+             weight="bold").pack(anchor="w", padx=18, pady=(16, 0))
+        total = sum(float(c["total"]) for c in categories)
+        _lbl(left, f"This period · total PKR {total:,.0f}", size=10,
+             color=C("text3")).pack(anchor="w", padx=18, pady=(0, 8))
+        donut = _embed_figure(charts.report_spending_donut(categories), left)
+        donut.pack(fill="both", expand=True, padx=12, pady=(0, 14))
+
+        right = _card(row)
+        right.pack(side="left", fill="both", expand=True, padx=(8, 0), pady=8)
+        _lbl(right, "Income vs Expense", size=13,
+             weight="bold").pack(anchor="w", padx=18, pady=(16, 0))
+        _lbl(right, "Last 6 months", size=10,
+             color=C("text3")).pack(anchor="w", padx=18, pady=(0, 8))
+        bars = _embed_figure(charts.report_income_expense_bars(monthly), right)
+        bars.pack(fill="both", expand=True, padx=12, pady=(0, 14))
+
+        footer = ctk.CTkFrame(self._report_scroll, fg_color="transparent")
+        footer.pack(fill="x", pady=(4, 8))
+        _btn(footer, "Export to CSV", command=self._export_csv,
+             width=130, height=34, style="ghost").pack(side="right")
+        return
         for fn, title in [
             (lambda: charts.balance_trend(monthly), "Balance Trend — Last 6 Months"),
             (lambda: charts.monthly_income_vs_expense(monthly),

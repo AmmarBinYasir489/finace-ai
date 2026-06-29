@@ -90,3 +90,81 @@ def balance_trend(data: list) -> Figure:
     ax.tick_params(labelsize=9)
     fig.tight_layout()
     return fig
+
+
+def report_spending_donut(data: list) -> Figure:
+    """Dark dashboard donut chart for report cards."""
+    fig, ax = _base_fig(figsize=(5.2, 3.2))
+    ax.axis("equal")
+    ax.axis("off")
+    if not data:
+        ax.text(0.5, 0.5, "No spending data", ha="center", va="center",
+                fontsize=9, color="#8aa4c8", transform=ax.transAxes)
+        fig.tight_layout()
+        return fig
+
+    labels = [d["category"] for d in data[:6]]
+    values = [float(d["total"]) for d in data[:6]]
+    total = sum(values)
+    colors = ["#38bdf8", "#34d399", "#818cf8", "#fb923c", "#f472b6", "#94a3b8"]
+    ax.pie(
+        values,
+        startangle=90,
+        counterclock=False,
+        colors=colors[: len(values)],
+        wedgeprops={"width": 0.38, "edgecolor": "none"},
+    )
+    ax.text(0, 0.08, "TOTAL", ha="center", va="center", fontsize=7,
+            color="#547296")
+    ax.text(0, -0.08, f"{total:,.0f}", ha="center", va="center",
+            fontsize=12, fontweight="bold", color="#ffffff")
+    legend = [
+        f"{label}   {value / total * 100:.0f}%   {value:,.0f}"
+        for label, value in zip(labels, values)
+    ]
+    ax.legend(
+        legend,
+        loc="center left",
+        bbox_to_anchor=(1.0, 0.5),
+        frameon=False,
+        fontsize=8,
+        labelcolor="#c7d2fe",
+        handlelength=0.8,
+        handletextpad=0.6,
+    )
+    fig.tight_layout()
+    return fig
+
+
+def report_income_expense_bars(data: list) -> Figure:
+    """Dark grouped bar chart for income-vs-expense reports."""
+    fig, ax = _base_fig(figsize=(5.2, 3.2))
+    if not data:
+        ax.text(0.5, 0.5, "No monthly data", ha="center", va="center",
+                fontsize=9, color="#8aa4c8", transform=ax.transAxes)
+        ax.axis("off")
+        fig.tight_layout()
+        return fig
+
+    import numpy as np
+    rows = data[-6:]
+    months = [d["month"][-2:] for d in rows]
+    labels = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug",
+              "Sep", "Oct", "Nov", "Dec"]
+    months = [labels[int(m) - 1] for m in months]
+    income = [float(d["income"]) for d in rows]
+    expense = [float(d["expense"]) for d in rows]
+    x = np.arange(len(rows))
+    width = 0.24
+    ax.bar(x - width / 2, income, width, label="Income", color="#34d399")
+    ax.bar(x + width / 2, expense, width, label="Expense", color="#fb7185")
+    ax.set_xticks(x)
+    ax.set_xticklabels(months, color="#6d8bb3", fontsize=8)
+    ax.tick_params(axis="y", left=False, labelleft=False)
+    ax.grid(axis="y", color="#1e3a5f", alpha=0.35, linewidth=0.7)
+    for spine in ax.spines.values():
+        spine.set_visible(False)
+    ax.legend(loc="upper right", frameon=False, fontsize=8,
+              labelcolor="#8aa4c8")
+    fig.tight_layout()
+    return fig
