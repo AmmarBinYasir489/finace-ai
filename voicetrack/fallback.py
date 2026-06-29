@@ -39,6 +39,8 @@ EXPENSE_PHRASES = [
     "gave them", "paid him", "paid her", "paid them",
     "lent to", "loaned to",
     "bought", "spent", "purchased", "paid for",
+    "done shopping", "did shopping", "gone shopping",
+    "shopping of", "fare was", "fare is", "cost was", "cost is",
 ]
 
 CATEGORY_KEYWORDS = [
@@ -66,11 +68,13 @@ CATEGORY_KEYWORDS = [
 
 # Conjunction/separator patterns that often split multi-transaction sentences
 _SPLIT_PATTERNS = [
-    # "and paid/bought/spent..." — verb-led second clause
-    r'\s+and\s+(?=(?:paid|bought|spent|gave|sent|received|got|purchased)\s)',
-    r'\s*,\s*(?=(?:paid|bought|spent|gave|sent|received|got|purchased)\s)',
-    # "and <number>" — amount-led second clause: "ticket 2000 and 500 for cab"
+    # "and paid/bought/spent/done..." — verb-led second clause
+    r'\s+and\s+(?=(?:paid|bought|spent|gave|sent|received|got|purchased|done|did)\s)',
+    r'\s*,\s*(?=(?:paid|bought|spent|gave|sent|received|got|purchased|done|did)\s)',
+    # "and <number>" — amount-led: "ticket 2000 and 500 for cab"
     r'\s+and\s+(?=\d)',
+    # "and <1-4 words> <number>" — "shopping 3000 and cab fare 500"
+    r'\s+and\s+(?=(?:\w+\s+){1,4}\d)',
 ]
 
 
@@ -117,6 +121,28 @@ def _detect_category(lowered: str) -> str:
     return "Other"
 
 
+_FILLER = re.compile(
+    r'\b(i|the|a|an|on|for|of|to|at|in|by|with|my|his|her|their|'
+    r'some|just|also|and|paid|spent|bought|received|got|gave|'
+    r'yesterday|today|tomorrow|last|week|month)\b',
+    re.IGNORECASE,
+)
+_TRAILING_JUNK = re.compile(r'[\s\-–,;:\.]+$')
+
+
+def _make_description(text: str, amount: float) -> str:
+    """Build a clean short description from the raw text."""
+    # Remove the amount (number) so description doesn't end with "for"
+    desc = re.sub(r'[\d,]+(?:\.\d+)?', '', text)
+    # Remove common filler words to get the core meaning
+    desc = _FILLER.sub(' ', desc)
+    # Collapse spaces and strip trailing punctuation/prepositions
+    desc = re.sub(r'\s+', ' ', desc).strip()
+    desc = _TRAILING_JUNK.sub('', desc).strip()
+    # Capitalise and cap length
+    return (desc[:50].capitalize() or text[:40]) if desc else text[:40]
+
+
 def _parse_single(text: str) -> dict | None:
     """Parse one transaction sentence. Returns None if no amount found."""
     fixed = _fix_spelling(text)
@@ -127,24 +153,24 @@ def _parse_single(text: str) -> dict | None:
         return None
     amount = float(match.group().replace(',', ''))
 
-    tx_type = _detect_type(lowered)
+    tx_type  = _detect_type(lowered)
     category = _detect_category(lowered)
 
     # Salary/Freelance always income
     if category in ("Salary", "Freelance") and tx_type == "expense":
         tx_type = "income"
 
-    date = _resolve_date_str(lowered, fixed)
-    description = text.strip()[:60]
+    date        = _resolve_date_str(lowered, fixed)
+    description = _make_description(fixed, amount)
 
     return {
-        "type": tx_type,
-        "amount": amount,
-        "category": category,
+        "type":        tx_type,
+        "amount":      amount,
+        "category":    category,
         "description": description,
-        "date": date,
-        "time": None,
-        "confidence": "low",
+        "date":        date,
+        "time":        None,
+        "confidence":  "low",
     }
 
 

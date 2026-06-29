@@ -1,5 +1,4 @@
 """VoiceTrack desktop UI — CustomTkinter app."""
-
 from __future__ import annotations
 
 import threading
@@ -19,30 +18,90 @@ from voicetrack.db import CATEGORIES
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
 
-# ── panel names ──────────────────────────────
-_PANEL_DASHBOARD    = "Dashboard"
-_PANEL_ADD          = "Add Entry"
-_PANEL_HISTORY      = "History"
-_PANEL_REPORTS      = "Reports"
+# ── Panel IDs ────────────────────────────────────────────
+_PANEL_DASHBOARD = "Dashboard"
+_PANEL_ADD       = "Add Entry"
+_PANEL_HISTORY   = "History"
+_PANEL_REPORTS   = "Reports"
 
 PAGE_SIZE = 50
 
-# ── category accent colours ──────────────────
-CAT_COLORS = {
-    "Food & Groceries": "#f59e0b",
-    "Transport": "#3b82f6",
-    "Utilities": "#8b5cf6",
-    "Health": "#10b981",
-    "Shopping": "#ec4899",
-    "Education": "#a78bfa",
-    "Rent": "#fb923c",
-    "Salary": "#22c55e",
-    "Freelance": "#06b6d4",
-    "Entertainment": "#f97316",
-    "Other": "#94a3b8",
+# ── Theme palettes ───────────────────────────────────────
+_DARK = {
+    "bg":        "#0b0d14",
+    "surface":   "#12151f",
+    "surface2":  "#1a1d2e",
+    "surface3":  "#22263a",
+    "border":    "#2a2d45",
+    "accent":    "#6366f1",
+    "accent_h":  "#4f52d4",
+    "accent_dim":"#1e2060",
+    "success":   "#22c55e",
+    "success_bg":"#0b2e18",
+    "danger":    "#ef4444",
+    "danger_bg": "#2e0b0b",
+    "warning":   "#f59e0b",
+    "text":      "#e2e8f0",
+    "text2":     "#94a3b8",
+    "text3":     "#4b5675",
+    "income_bg": "#0b2e18",
+    "expense_bg":"#2e0b0b",
+    "income_fg": "#22c55e",
+    "expense_fg":"#f87171",
+    "sidebar":   "#0d0f1a",
+    "sidebar2":  "#13162a",
+    "card":      "#13162a",
+    "card2":     "#1a1d30",
+    "hover":     "#1e2140",
+    "input_bg":  "#0b0d14",
+}
+_LIGHT = {
+    "bg":        "#f0f2f8",
+    "surface":   "#ffffff",
+    "surface2":  "#f4f6fb",
+    "surface3":  "#e8ecf5",
+    "border":    "#d1d8ef",
+    "accent":    "#6366f1",
+    "accent_h":  "#4f52d4",
+    "accent_dim":"#e0e1fc",
+    "success":   "#16a34a",
+    "success_bg":"#dcfce7",
+    "danger":    "#dc2626",
+    "danger_bg": "#fee2e2",
+    "warning":   "#d97706",
+    "text":      "#0f172a",
+    "text2":     "#475569",
+    "text3":     "#94a3b8",
+    "income_bg": "#dcfce7",
+    "expense_bg":"#fee2e2",
+    "income_fg": "#16a34a",
+    "expense_fg":"#dc2626",
+    "sidebar":   "#ffffff",
+    "sidebar2":  "#f4f6fb",
+    "card":      "#ffffff",
+    "card2":     "#f4f6fb",
+    "hover":     "#eef0fb",
+    "input_bg":  "#f4f6fb",
 }
 
-TYPE_COLORS = {"income": "#22c55e", "expense": "#ef4444"}
+_dark_mode = True
+
+def C(key: str) -> str:
+    return (_DARK if _dark_mode else _LIGHT)[key]
+
+CAT_COLORS = {
+    "Food & Groceries": "#f59e0b",
+    "Transport":        "#3b82f6",
+    "Utilities":        "#8b5cf6",
+    "Health":           "#10b981",
+    "Shopping":         "#ec4899",
+    "Education":        "#06b6d4",
+    "Rent":             "#fb923c",
+    "Salary":           "#22c55e",
+    "Freelance":        "#a78bfa",
+    "Entertainment":    "#f97316",
+    "Other":            "#64748b",
+}
 
 
 def _embed_figure(fig, parent):
@@ -51,43 +110,65 @@ def _embed_figure(fig, parent):
     return canvas.get_tk_widget()
 
 
-# ─────────────────────────────────────────────────────────
-#  Helper widgets
-# ─────────────────────────────────────────────────────────
+# ── Widget helpers ───────────────────────────────────────
 
-def _card(parent, **kw) -> ctk.CTkFrame:
-    return ctk.CTkFrame(parent, corner_radius=12,
-                        fg_color="#1e2130", **kw)
+def _card(parent, radius=14, **kw) -> ctk.CTkFrame:
+    return ctk.CTkFrame(parent, corner_radius=radius,
+                        fg_color=C("card"), **kw)
 
+def _surface(parent, radius=10, **kw) -> ctk.CTkFrame:
+    return ctk.CTkFrame(parent, corner_radius=radius,
+                        fg_color=C("surface2"), **kw)
 
-def _label(parent, text, size=13, weight="normal", color=None, **kw):
+def _lbl(parent, text, size=13, weight="normal", color=None, **kw):
     font = ctk.CTkFont(size=size, weight=weight)
-    kw2 = {"text_color": color} if color else {}
+    kw2 = {"text_color": color or C("text")}
     return ctk.CTkLabel(parent, text=text, font=font, **kw2, **kw)
 
+def _btn(parent, text, command=None, width=110, height=34,
+         style="primary", **kw) -> ctk.CTkButton:
+    if style == "primary":
+        fg, hover, tc = C("accent"), C("accent_h"), "#ffffff"
+    elif style == "ghost":
+        fg, hover, tc = "transparent", C("hover"), C("text2")
+    elif style == "danger":
+        fg, hover, tc = C("danger_bg"), C("danger"), C("danger")
+    else:
+        fg, hover, tc = C("surface2"), C("surface3"), C("text2")
+    return ctk.CTkButton(parent, text=text, command=command,
+                         width=width, height=height, corner_radius=8,
+                         fg_color=fg, hover_color=hover,
+                         text_color=tc, font=ctk.CTkFont(size=13),
+                         **kw)
 
-# ─────────────────────────────────────────────────────────
-#  Main app
-# ─────────────────────────────────────────────────────────
+def _divider(parent):
+    ctk.CTkFrame(parent, fg_color=C("border"), height=1,
+                 corner_radius=0).pack(fill="x", padx=16, pady=4)
+
+
+# ════════════════════════════════════════════════════════
+#  App
+# ════════════════════════════════════════════════════════
 
 class VoiceTrackApp(ctk.CTk):
     def __init__(self):
         super().__init__()
         self.title("VoiceTrack")
-        self.minsize(960, 620)
-        self.geometry("1160x700")
-        self.configure(fg_color="#12141c")
+        self.minsize(980, 640)
+        self.geometry("1200x720")
+        self.configure(fg_color=C("bg"))
 
         db.init_db()
 
         self._panels: dict[str, ctk.CTkFrame] = {}
-        self._tx_offset = 0
-        self._tx_filters: dict = {}
+        self._tx_offset    = 0
         self._voice_recorder = None
-        self._recording = False
+        self._recording    = False
         self._spinner_active = False
-        self._spinner_frame = 0
-        self._dash_period = "month"  # today / week / month / all
+        self._spinner_tick = 0
+        self._dash_period  = "month"
+        self._current_panel = _PANEL_DASHBOARD
+        self._hist_type_filter = ""
 
         self._build_sidebar()
         self._build_content_area()
@@ -96,61 +177,115 @@ class VoiceTrackApp(ctk.CTk):
     # ── Sidebar ──────────────────────────────────────────
 
     def _build_sidebar(self):
-        sb = ctk.CTkFrame(self, width=190, corner_radius=0,
-                          fg_color="#161824")
-        sb.pack(side="left", fill="y")
-        sb.pack_propagate(False)
+        global _sb_frame
+        self._sb = ctk.CTkFrame(self, width=200, corner_radius=0,
+                                 fg_color=C("sidebar"))
+        self._sb.pack(side="left", fill="y")
+        self._sb.pack_propagate(False)
 
-        # Logo area
-        logo_frame = ctk.CTkFrame(sb, fg_color="#1e2130", corner_radius=14,
-                                  width=48, height=48)
-        logo_frame.pack(pady=(24, 6))
-        logo_frame.pack_propagate(False)
-        _label(logo_frame, "🎙", size=22).pack(expand=True)
+        # Accent top bar
+        ctk.CTkFrame(self._sb, fg_color=C("accent"),
+                     height=3, corner_radius=0).pack(fill="x")
 
-        _label(sb, "VoiceTrack", size=16, weight="bold").pack(pady=(0, 20))
+        # Logo
+        logo_wrap = ctk.CTkFrame(self._sb, fg_color="transparent")
+        logo_wrap.pack(fill="x", padx=16, pady=(20, 16))
 
+        logo_ic = ctk.CTkFrame(logo_wrap, fg_color=C("accent_dim"),
+                               corner_radius=12, width=38, height=38)
+        logo_ic.pack(side="left")
+        logo_ic.pack_propagate(False)
+        _lbl(logo_ic, "🎙", size=18).pack(expand=True)
+
+        name_col = ctk.CTkFrame(logo_wrap, fg_color="transparent")
+        name_col.pack(side="left", padx=(10, 0))
+        _lbl(name_col, "VoiceTrack", size=15, weight="bold",
+             color=C("text")).pack(anchor="w")
+        _lbl(name_col, "Finance Tracker", size=10,
+             color=C("text3")).pack(anchor="w")
+
+        _divider(self._sb)
+
+        # Nav items
         self._nav_btns: dict[str, ctk.CTkButton] = {}
-        nav_items = [
-            ("Dashboard", "📊", _PANEL_DASHBOARD),
-            ("Add Entry",  "➕", _PANEL_ADD),
-            ("History",    "📋", _PANEL_HISTORY),
-            ("Reports",    "📈", _PANEL_REPORTS),
+        nav = [
+            ("📊", "Dashboard",  _PANEL_DASHBOARD),
+            ("➕", "Add Entry",  _PANEL_ADD),
+            ("📋", "History",    _PANEL_HISTORY),
+            ("📈", "Reports",    _PANEL_REPORTS),
         ]
-        for label, icon, panel in nav_items:
+        for icon, label, panel in nav:
             btn = ctk.CTkButton(
-                sb, text=f"  {icon}  {label}",
-                anchor="w", corner_radius=10,
-                fg_color="transparent", hover_color="#252840",
-                text_color="#8892a4",
+                self._sb,
+                text=f"  {icon}   {label}",
+                anchor="w",
+                corner_radius=10,
+                height=40,
+                fg_color="transparent",
+                hover_color=C("hover"),
+                text_color=C("text2"),
                 font=ctk.CTkFont(size=13),
                 command=lambda p=panel: self._show_panel(p),
             )
             btn.pack(fill="x", padx=10, pady=2)
             self._nav_btns[panel] = btn
 
-        # Settings at bottom
-        ctk.CTkFrame(sb, fg_color="#2a2d3e", height=1).pack(
-            fill="x", padx=14, side="bottom", pady=(0, 8))
+        # Bottom: theme toggle + settings
+        bottom = ctk.CTkFrame(self._sb, fg_color="transparent")
+        bottom.pack(side="bottom", fill="x", padx=10, pady=12)
+
+        _divider(self._sb)
+
+        # Theme toggle
+        tog_row = ctk.CTkFrame(self._sb, fg_color="transparent")
+        tog_row.pack(side="bottom", fill="x", padx=16, pady=(0, 8))
+        _lbl(tog_row, "🌙 Dark", size=12, color=C("text2")).pack(side="left")
+        self._theme_sw = ctk.CTkSwitch(
+            tog_row, text="", width=40,
+            button_color=C("accent"), button_hover_color=C("accent_h"),
+            progress_color=C("accent_dim"),
+            command=self._toggle_theme,
+        )
+        self._theme_sw.pack(side="right")
+
         ctk.CTkButton(
-            sb, text="  ⚙️  Settings", anchor="w",
-            corner_radius=10, fg_color="transparent",
-            hover_color="#252840", text_color="#8892a4",
-            font=ctk.CTkFont(size=13),
-        ).pack(fill="x", padx=10, pady=4, side="bottom")
+            self._sb, text="  ⚙️   Settings",
+            anchor="w", corner_radius=10, height=36,
+            fg_color="transparent", hover_color=C("hover"),
+            text_color=C("text3"), font=ctk.CTkFont(size=12),
+        ).pack(side="bottom", fill="x", padx=10, pady=(0, 4))
 
     def _set_active_nav(self, panel: str):
         for p, btn in self._nav_btns.items():
             if p == panel:
-                btn.configure(fg_color="#252840", text_color="#ffffff")
+                btn.configure(fg_color=C("accent_dim"),
+                              text_color=C("accent"))
             else:
-                btn.configure(fg_color="transparent", text_color="#8892a4")
+                btn.configure(fg_color="transparent",
+                              text_color=C("text2"))
+
+    # ── Theme toggle ─────────────────────────────────────
+
+    def _toggle_theme(self):
+        global _dark_mode
+        _dark_mode = not _dark_mode
+        ctk.set_appearance_mode("dark" if _dark_mode else "light")
+
+        # Update sidebar
+        self._sb.configure(fg_color=C("sidebar"))
+        self.configure(fg_color=C("bg"))
+
+        # Rebuild content area with new colours
+        self._content.destroy()
+        self._panels.clear()
+        self._build_content_area()
+        self._show_panel(self._current_panel)
 
     # ── Content area ─────────────────────────────────────
 
     def _build_content_area(self):
         self._content = ctk.CTkFrame(self, corner_radius=0,
-                                     fg_color="#12141c")
+                                     fg_color=C("bg"))
         self._content.pack(side="left", fill="both", expand=True)
 
         self._panels[_PANEL_DASHBOARD] = self._build_dashboard_panel()
@@ -159,6 +294,7 @@ class VoiceTrackApp(ctk.CTk):
         self._panels[_PANEL_REPORTS]   = self._build_reports_panel()
 
     def _show_panel(self, name: str):
+        self._current_panel = name
         for p in self._panels.values():
             p.pack_forget()
         self._panels[name].pack(fill="both", expand=True)
@@ -176,80 +312,113 @@ class VoiceTrackApp(ctk.CTk):
     def _build_dashboard_panel(self) -> ctk.CTkFrame:
         panel = ctk.CTkFrame(self._content, fg_color="transparent")
 
-        # Header
+        # ── Header ──
         hdr = ctk.CTkFrame(panel, fg_color="transparent")
-        hdr.pack(fill="x", padx=24, pady=(20, 0))
-        _label(hdr, "Dashboard", size=20, weight="bold").pack(side="left")
-        self._date_label = _label(hdr, "", size=12, color="#8892a4")
-        self._date_label.pack(side="right")
+        hdr.pack(fill="x", padx=28, pady=(22, 0))
+        _lbl(hdr, "Dashboard", size=22, weight="bold").pack(side="left")
+        right_hdr = ctk.CTkFrame(hdr, fg_color="transparent")
+        right_hdr.pack(side="right")
+        self._date_label = _lbl(right_hdr, "", size=12, color=C("text2"))
+        self._date_label.pack(side="left", padx=(0, 12))
+        _btn(right_hdr, "⟳  Refresh", command=self._refresh_dashboard,
+             width=100, height=30, style="ghost").pack(side="left")
 
-        # Summary cards
-        cards_frame = ctk.CTkFrame(panel, fg_color="transparent")
-        cards_frame.pack(fill="x", padx=24, pady=16)
+        # ── Summary cards ──
+        cards_row = ctk.CTkFrame(panel, fg_color="transparent")
+        cards_row.pack(fill="x", padx=28, pady=16)
 
         self._sum_labels: dict[str, ctk.CTkLabel] = {}
         card_defs = [
-            ("income_month",   "Income this month",    "⬆", "#22c55e", "#0d2b1a"),
-            ("expense_month",  "Expenses this month",  "⬇", "#ef4444", "#2b0d0d"),
-            ("balance",        "Net balance",           "💳", "#3b82f6", "#0d1a2b"),
+            ("income_month",  "Income",       "↑", C("income_fg"),  C("income_bg")),
+            ("expense_month", "Expenses",     "↓", C("expense_fg"), C("expense_bg")),
+            ("balance",       "Net Balance",  "◈", C("accent"),     C("accent_dim")),
         ]
-        for key, title, icon, color, icon_bg in card_defs:
-            c = _card(cards_frame)
-            c.pack(side="left", expand=True, fill="both", padx=6)
+        for key, title, icon, color, bg in card_defs:
+            c = _card(cards_row)
+            c.pack(side="left", expand=True, fill="both", padx=5)
 
-            top = ctk.CTkFrame(c, fg_color="transparent")
-            top.pack(fill="x", padx=16, pady=(14, 4))
-            _label(top, title, size=11, color="#8892a4").pack(side="left")
+            # Coloured left accent stripe
+            stripe = ctk.CTkFrame(c, fg_color=color, width=4,
+                                  corner_radius=0)
+            stripe.pack(side="left", fill="y", padx=(0, 0))
+            stripe.pack_propagate(False)
 
-            icon_frame = ctk.CTkFrame(top, fg_color=icon_bg,
-                                      corner_radius=8, width=28, height=28)
-            icon_frame.pack(side="right")
-            icon_frame.pack_propagate(False)
-            _label(icon_frame, icon, size=13).pack(expand=True)
+            inner = ctk.CTkFrame(c, fg_color="transparent")
+            inner.pack(fill="both", expand=True, padx=14, pady=14)
 
-            lbl = _label(c, "PKR 0", size=20, weight="bold", color=color)
-            lbl.pack(anchor="w", padx=16, pady=(0, 14))
+            top_row = ctk.CTkFrame(inner, fg_color="transparent")
+            top_row.pack(fill="x")
+            _lbl(top_row, title, size=11, color=C("text2")).pack(side="left")
+
+            ic_f = ctk.CTkFrame(top_row, fg_color=bg, corner_radius=8,
+                                width=28, height=28)
+            ic_f.pack(side="right")
+            ic_f.pack_propagate(False)
+            _lbl(ic_f, icon, size=14, color=color).pack(expand=True)
+
+            lbl = _lbl(inner, "PKR 0", size=22, weight="bold", color=color)
+            lbl.pack(anchor="w", pady=(6, 0))
             self._sum_labels[key] = lbl
 
-        # Period tabs
-        tab_frame = ctk.CTkFrame(panel, fg_color="transparent")
-        tab_frame.pack(fill="x", padx=24, pady=(0, 12))
+            _lbl(inner, "This period", size=10, color=C("text3")).pack(anchor="w")
+
+        # ── Period tabs (pill style) ──
+        tab_bg = _surface(panel, radius=10)
+        tab_bg.pack(fill="x", padx=28, pady=(0, 14))
+        tab_bg.configure(fg_color=C("surface2"))
+        inner_tabs = ctk.CTkFrame(tab_bg, fg_color="transparent")
+        inner_tabs.pack(padx=6, pady=6)
+
         self._period_btns: dict[str, ctk.CTkButton] = {}
         for label, key in [("Today","today"),("This Week","week"),
                             ("This Month","month"),("All Time","all")]:
             b = ctk.CTkButton(
-                tab_frame, text=label, width=90, height=28,
-                corner_radius=8, fg_color="transparent",
-                hover_color="#252840", text_color="#8892a4",
+                inner_tabs, text=label, width=100, height=28,
+                corner_radius=7,
+                fg_color="transparent",
+                hover_color=C("hover"),
+                text_color=C("text2"),
                 font=ctk.CTkFont(size=12),
                 command=lambda k=key: self._set_period(k),
             )
-            b.pack(side="left", padx=3)
+            b.pack(side="left", padx=2)
             self._period_btns[key] = b
 
-        # Body: spending chart + recent transactions
+        # ── Body ──
         body = ctk.CTkFrame(panel, fg_color="transparent")
-        body.pack(fill="both", expand=True, padx=24, pady=(0, 16))
+        body.pack(fill="both", expand=True, padx=28, pady=(0, 20))
 
-        # Left — spending by category
+        # Left — Spending by category
         left = _card(body)
         left.pack(side="left", fill="both", expand=True, padx=(0, 8))
-        _label(left, "Spending by category", size=13,
-               weight="bold").pack(anchor="w", padx=16, pady=(14, 10))
-        self._cat_chart_frame = ctk.CTkScrollableFrame(
-            left, fg_color="transparent")
-        self._cat_chart_frame.pack(fill="both", expand=True, padx=12,
-                                   pady=(0, 12))
 
-        # Right — recent transactions
+        lhdr = ctk.CTkFrame(left, fg_color="transparent")
+        lhdr.pack(fill="x", padx=16, pady=(16, 6))
+        _lbl(lhdr, "Spending by Category", size=13,
+             weight="bold").pack(side="left")
+
+        self._cat_chart_frame = ctk.CTkScrollableFrame(
+            left, fg_color="transparent",
+            scrollbar_button_color=C("border"),
+            scrollbar_button_hover_color=C("surface3"))
+        self._cat_chart_frame.pack(fill="both", expand=True,
+                                   padx=10, pady=(0, 12))
+
+        # Right — Recent transactions
         right = _card(body)
         right.pack(side="left", fill="both", expand=True, padx=(8, 0))
-        _label(right, "Recent transactions", size=13,
-               weight="bold").pack(anchor="w", padx=16, pady=(14, 10))
+
+        rhdr = ctk.CTkFrame(right, fg_color="transparent")
+        rhdr.pack(fill="x", padx=16, pady=(16, 6))
+        _lbl(rhdr, "Recent Transactions", size=13,
+             weight="bold").pack(side="left")
+
         self._recent_frame = ctk.CTkScrollableFrame(
-            right, fg_color="transparent")
-        self._recent_frame.pack(fill="both", expand=True, padx=4,
-                                pady=(0, 12))
+            right, fg_color="transparent",
+            scrollbar_button_color=C("border"),
+            scrollbar_button_hover_color=C("surface3"))
+        self._recent_frame.pack(fill="both", expand=True,
+                                padx=6, pady=(0, 12))
 
         return panel
 
@@ -259,45 +428,45 @@ class VoiceTrackApp(ctk.CTk):
 
     def _refresh_dashboard(self):
         today = datetime.date.today()
+        days = ["Monday","Tuesday","Wednesday","Thursday",
+                "Friday","Saturday","Sunday"]
+        months = ["Jan","Feb","Mar","Apr","May","Jun",
+                  "Jul","Aug","Sep","Oct","Nov","Dec"]
         self._date_label.configure(
-            text=today.strftime("%A, %d %B %Y"))
+            text=f"{days[today.weekday()]}, {today.day} {months[today.month-1]} {today.year}")
 
-        # active period button highlight
         for k, b in self._period_btns.items():
             if k == self._dash_period:
-                b.configure(fg_color="#3b82f6", text_color="#ffffff")
+                b.configure(fg_color=C("accent"), text_color="#ffffff")
             else:
-                b.configure(fg_color="transparent", text_color="#8892a4")
+                b.configure(fg_color="transparent", text_color=C("text2"))
 
         all_txs = db.get_transactions(limit=100000)
 
         def _in_period(tx):
-            d_str = tx.get("date", "")
-            if not d_str:
+            d = tx.get("date", "")
+            if not d:
                 return True
             try:
-                d = datetime.date.fromisoformat(d_str)
+                dt = datetime.date.fromisoformat(d)
             except ValueError:
                 return True
             if self._dash_period == "today":
-                return d == today
+                return dt == today
             elif self._dash_period == "week":
-                return (today - d).days <= 6
+                return (today - dt).days <= 6
             elif self._dash_period == "month":
-                return d.year == today.year and d.month == today.month
-            return True  # all
+                return dt.year == today.year and dt.month == today.month
+            return True
 
         txs = [t for t in all_txs if _in_period(t)]
-
         income  = sum(t["amount"] for t in txs if t["type"] == "income")
         expense = sum(t["amount"] for t in txs if t["type"] == "expense")
         balance = income - expense
 
-        self._sum_labels["income_month"].configure(
-            text=f"PKR {income:,.0f}")
-        self._sum_labels["expense_month"].configure(
-            text=f"PKR {expense:,.0f}")
-        bal_color = "#22c55e" if balance >= 0 else "#ef4444"
+        self._sum_labels["income_month"].configure(text=f"PKR {income:,.0f}")
+        self._sum_labels["expense_month"].configure(text=f"PKR {expense:,.0f}")
+        bal_color = C("income_fg") if balance >= 0 else C("expense_fg")
         self._sum_labels["balance"].configure(
             text=f"PKR {balance:,.0f}", text_color=bal_color)
 
@@ -315,182 +484,204 @@ class VoiceTrackApp(ctk.CTk):
                 totals[cat] = totals.get(cat, 0) + t["amount"]
 
         if not totals:
-            _label(self._cat_chart_frame,
-                   "No expense data", color="#8892a4").pack(pady=20)
+            _lbl(self._cat_chart_frame, "No expense data for this period",
+                 color=C("text3")).pack(pady=30)
             return
 
         max_val = max(totals.values())
         for cat, val in sorted(totals.items(), key=lambda x: -x[1]):
-            row = ctk.CTkFrame(self._cat_chart_frame, fg_color="transparent")
-            row.pack(fill="x", pady=4)
-            _label(row, cat, size=12, color="#c8cdd8",
-                   width=90, anchor="e").pack(side="left", padx=(0, 8))
+            row = ctk.CTkFrame(self._cat_chart_frame,
+                               fg_color="transparent")
+            row.pack(fill="x", pady=5)
 
-            bar_bg = ctk.CTkFrame(row, fg_color="#252840",
-                                  corner_radius=4, height=10)
-            bar_bg.pack(side="left", fill="x", expand=True)
-            bar_bg.pack_propagate(False)
+            _lbl(row, cat, size=11, color=C("text2"),
+                 width=110, anchor="w").pack(side="left", padx=(4, 8))
 
-            color = CAT_COLORS.get(cat, "#94a3b8")
+            track = ctk.CTkFrame(row, fg_color=C("surface3"),
+                                 corner_radius=5, height=8)
+            track.pack(side="left", fill="x", expand=True)
+            track.pack_propagate(False)
+
+            color = CAT_COLORS.get(cat, "#64748b")
             ratio = val / max_val if max_val else 0
-            bar_bg.update_idletasks()
+            fill = ctk.CTkFrame(track, fg_color=color,
+                                corner_radius=5, height=8)
+            fill.place(relx=0, rely=0, relwidth=max(ratio, 0.03), relheight=1)
 
-            inner = ctk.CTkFrame(bar_bg, fg_color=color,
-                                 corner_radius=4, height=10)
-            inner.place(relx=0, rely=0, relwidth=max(ratio, 0.03), relheight=1)
-
-            _label(row, f"{val:,.0f}", size=11,
-                   color="#8892a4").pack(side="left", padx=8)
+            _lbl(row, f"{val:,.0f}", size=11,
+                 color=C("text3")).pack(side="left", padx=(8, 4))
 
     def _render_recent(self, txs):
         for w in self._recent_frame.winfo_children():
             w.destroy()
 
         recent = sorted(
-            txs, key=lambda t: (t.get("date") or "", t.get("created_at") or ""),
-            reverse=True
-        )[:10]
+            txs,
+            key=lambda t: (t.get("date") or "", t.get("created_at") or ""),
+            reverse=True,
+        )[:12]
 
         if not recent:
-            _label(self._recent_frame,
-                   "No transactions", color="#8892a4").pack(pady=20)
+            _lbl(self._recent_frame, "No transactions yet",
+                 color=C("text3")).pack(pady=30)
             return
 
         for t in recent:
-            row = ctk.CTkFrame(self._recent_frame, fg_color="transparent")
-            row.pack(fill="x", pady=5, padx=8)
+            row = ctk.CTkFrame(self._recent_frame, fg_color=C("card2"),
+                               corner_radius=10)
+            row.pack(fill="x", pady=3, padx=4)
 
-            # icon circle
-            cat = t.get("category", "Other")
-            color = CAT_COLORS.get(cat, "#94a3b8")
-            ic = ctk.CTkFrame(row, fg_color="#252840",
-                              corner_radius=20, width=36, height=36)
-            ic.pack(side="left", padx=(0, 10))
+            cat   = t.get("category", "Other")
+            color = CAT_COLORS.get(cat, "#64748b")
+
+            ic = ctk.CTkFrame(row, fg_color=C("surface3"),
+                              corner_radius=18, width=34, height=34)
+            ic.pack(side="left", padx=(10, 0), pady=8)
             ic.pack_propagate(False)
-            _label(ic, cat[0], size=13, weight="bold",
-                   color=color).pack(expand=True)
+            _lbl(ic, cat[0].upper(), size=12, weight="bold",
+                 color=color).pack(expand=True)
 
             info = ctk.CTkFrame(row, fg_color="transparent")
-            info.pack(side="left", fill="x", expand=True)
-            desc = str(t.get("description", ""))[:28] or cat
-            _label(info, desc, size=12, weight="bold").pack(anchor="w")
-            date_str = t.get("date", "")
-            time_str = t.get("time", "") or ""
-            _label(info, f"{date_str}  {time_str}".strip(),
-                   size=10, color="#8892a4").pack(anchor="w")
+            info.pack(side="left", fill="x", expand=True, padx=10, pady=8)
+            desc = str(t.get("description", ""))[:24] or cat
+            _lbl(info, desc, size=12, weight="bold").pack(anchor="w")
+            _lbl(info, t.get("date", ""), size=10,
+                 color=C("text3")).pack(anchor="w")
 
-            sign = "+" if t["type"] == "income" else "-"
-            amt_color = TYPE_COLORS.get(t["type"], "#fff")
-            _label(row, f"{sign}{t['amount']:,.0f}",
-                   size=13, weight="bold", color=amt_color).pack(
-                side="right", padx=4)
+            sign      = "+" if t["type"] == "income" else "-"
+            amt_color = C("income_fg") if t["type"] == "income" else C("expense_fg")
+            _lbl(row, f"{sign}{t['amount']:,.0f}",
+                 size=13, weight="bold",
+                 color=amt_color).pack(side="right", padx=12)
 
-    # ── History panel ─────────────────────────────────────
+    # ── History ───────────────────────────────────────────
 
     def _build_history_panel(self) -> ctk.CTkFrame:
         panel = ctk.CTkFrame(self._content, fg_color="transparent")
 
+        # Header
         hdr = ctk.CTkFrame(panel, fg_color="transparent")
-        hdr.pack(fill="x", padx=24, pady=(20, 12))
-        _label(hdr, "History", size=20, weight="bold").pack(side="left")
+        hdr.pack(fill="x", padx=28, pady=(22, 14))
+        _lbl(hdr, "History", size=22, weight="bold").pack(side="left")
 
-        # Search
-        search_frame = ctk.CTkFrame(panel, fg_color="#1e2130",
-                                    corner_radius=10)
-        search_frame.pack(fill="x", padx=24, pady=(0, 10))
-        _label(search_frame, "🔍", size=13,
-               color="#8892a4").pack(side="left", padx=10)
+        # Search bar
+        sb = ctk.CTkFrame(panel, fg_color=C("card"),
+                          corner_radius=10)
+        sb.pack(fill="x", padx=28, pady=(0, 10))
+        _lbl(sb, "🔍", size=13, color=C("text3")).pack(
+            side="left", padx=(14, 6), pady=10)
         self._search_var = ctk.StringVar()
-        self._search_var.trace_add("write",
-                                   lambda *_: self._refresh_history())
+        self._search_var.trace_add("write", lambda *_: self._refresh_history())
         ctk.CTkEntry(
-            search_frame, placeholder_text="Search transactions…",
+            sb, placeholder_text="Search transactions…",
             textvariable=self._search_var,
             border_width=0, fg_color="transparent",
+            text_color=C("text"),
+            placeholder_text_color=C("text3"),
             font=ctk.CTkFont(size=13),
-        ).pack(fill="x", pady=6, padx=(0, 10))
+        ).pack(fill="x", pady=10, padx=(0, 12))
 
-        # Filter row
-        filter_row = ctk.CTkFrame(panel, fg_color="transparent")
-        filter_row.pack(fill="x", padx=24, pady=(0, 8))
+        # Filter bar
+        fb = ctk.CTkFrame(panel, fg_color="transparent")
+        fb.pack(fill="x", padx=28, pady=(0, 10))
 
+        # Type pills
+        pill_bg = ctk.CTkFrame(fb, fg_color=C("card"),
+                               corner_radius=9)
+        pill_bg.pack(side="left")
         self._type_filter_btns: dict[str, ctk.CTkButton] = {}
-        for label, val in [("All",""), ("Income","income"), ("Expense","expense")]:
+        for label, val in [("All", ""), ("Income", "income"), ("Expense", "expense")]:
             b = ctk.CTkButton(
-                filter_row, text=label, width=72, height=28,
-                corner_radius=8, fg_color="transparent",
-                hover_color="#252840", text_color="#8892a4",
+                pill_bg, text=label, width=72, height=28,
+                corner_radius=7,
+                fg_color="transparent",
+                hover_color=C("hover"),
+                text_color=C("text2"),
                 font=ctk.CTkFont(size=12),
                 command=lambda v=val: self._set_type_filter(v),
             )
-            b.pack(side="left", padx=2)
+            b.pack(side="left", padx=3, pady=3)
             self._type_filter_btns[val] = b
 
+        # Category dropdown
         self._filter_cat = ctk.CTkOptionMenu(
-            filter_row, values=["All categories"] + CATEGORIES,
-            width=150, height=28, corner_radius=8,
-            fg_color="#1e2130", button_color="#1e2130",
+            fb, values=["All categories"] + CATEGORIES,
+            width=155, height=34, corner_radius=9,
+            fg_color=C("card"), button_color=C("card"),
+            button_hover_color=C("hover"),
+            text_color=C("text2"),
+            dropdown_fg_color=C("surface2"),
+            dropdown_text_color=C("text"),
+            dropdown_hover_color=C("hover"),
             command=lambda _: self._refresh_history(),
         )
         self._filter_cat.pack(side="left", padx=8)
 
-        _label(filter_row, "From:", size=12,
-               color="#8892a4").pack(side="left", padx=(8, 4))
+        # Date range
+        date_frame = ctk.CTkFrame(fb, fg_color=C("card"), corner_radius=9)
+        date_frame.pack(side="left", padx=(0, 8))
+        _lbl(date_frame, "From", size=11, color=C("text3")).pack(
+            side="left", padx=(12, 4))
         self._filter_from = ctk.CTkEntry(
-            filter_row, width=110, height=28,
+            date_frame, width=100, height=28,
             placeholder_text="YYYY-MM-DD",
-            fg_color="#1e2130", border_color="#2a2d3e")
-        self._filter_from.pack(side="left", padx=(0, 4))
-
-        _label(filter_row, "–", size=12,
-               color="#8892a4").pack(side="left", padx=2)
+            fg_color="transparent", border_width=0,
+            text_color=C("text"),
+            placeholder_text_color=C("text3"),
+        )
+        self._filter_from.pack(side="left")
+        _lbl(date_frame, "–", size=12, color=C("text3")).pack(
+            side="left", padx=4)
         self._filter_to = ctk.CTkEntry(
-            filter_row, width=110, height=28,
+            date_frame, width=100, height=28,
             placeholder_text="YYYY-MM-DD",
-            fg_color="#1e2130", border_color="#2a2d3e")
-        self._filter_to.pack(side="left", padx=(4, 8))
-        ctk.CTkButton(
-            filter_row, text="Apply", width=60, height=28,
-            corner_radius=8, command=self._apply_hist_filters,
-        ).pack(side="left", padx=2)
+            fg_color="transparent", border_width=0,
+            text_color=C("text"),
+            placeholder_text_color=C("text3"),
+        )
+        self._filter_to.pack(side="left", padx=(0, 8))
 
-        self._hist_type_filter = ""
-        # highlight "All" button as default without triggering a refresh
+        _btn(fb, "Apply", command=self._apply_hist_filters,
+             width=70, height=34).pack(side="left")
+
+        # Set initial button state without triggering refresh
         for v, b in self._type_filter_btns.items():
             if v == "":
-                b.configure(fg_color="#3b82f6", text_color="#fff")
+                b.configure(fg_color=C("accent"), text_color="#ffffff")
             else:
-                b.configure(fg_color="transparent", text_color="#8892a4")
+                b.configure(fg_color="transparent", text_color=C("text2"))
 
         # Table header
-        col_defs = [("DATE",90),("TYPE",80),("CATEGORY",120),
-                    ("DESCRIPTION",0),("AMOUNT",90),("",36)]
-        th = ctk.CTkFrame(panel, fg_color="#1e2130", corner_radius=0,
-                          height=32)
-        th.pack(fill="x", padx=24)
+        th = ctk.CTkFrame(panel, fg_color=C("surface2"), corner_radius=0,
+                          height=36)
+        th.pack(fill="x", padx=28, pady=(4, 0))
         th.pack_propagate(False)
-        for col, w in col_defs:
+        for col, w in [("DATE",95),("TYPE",85),("CATEGORY",130),
+                       ("DESCRIPTION",0),("AMOUNT",100),("",44)]:
             kw = {"width": w} if w else {}
-            _label(th, col, size=10, color="#8892a4",
-                   anchor="w", **kw).pack(
-                side="left", padx=8, pady=6)
-            if not w:
-                th.pack_propagate(False)
+            _lbl(th, col, size=10, weight="bold",
+                 color=C("text3"), anchor="w", **kw).pack(
+                side="left", padx=10, pady=10)
 
         # Scrollable rows
         self._hist_scroll = ctk.CTkScrollableFrame(
-            panel, fg_color="transparent")
-        self._hist_scroll.pack(fill="both", expand=True, padx=24, pady=4)
+            panel, fg_color="transparent",
+            scrollbar_button_color=C("border"),
+            scrollbar_button_hover_color=C("surface3"))
+        self._hist_scroll.pack(fill="both", expand=True, padx=28, pady=4)
 
         # Pager
-        pager = ctk.CTkFrame(panel, fg_color="transparent")
-        pager.pack(fill="x", padx=24, pady=(0, 12))
-        ctk.CTkButton(pager, text="← Prev", width=80, height=28,
-                      command=self._tx_prev).pack(side="left", padx=4)
-        self._page_label = _label(pager, "Page 1", color="#8892a4")
+        pager = ctk.CTkFrame(panel, fg_color=C("surface2"),
+                             corner_radius=10, height=44)
+        pager.pack(fill="x", padx=28, pady=(0, 16))
+        pager.pack_propagate(False)
+        _btn(pager, "← Prev", command=self._tx_prev,
+             width=80, height=28, style="ghost").pack(
+            side="left", padx=10, pady=8)
+        self._page_label = _lbl(pager, "Page 1", size=12, color=C("text2"))
         self._page_label.pack(side="left", padx=8)
-        ctk.CTkButton(pager, text="Next →", width=80, height=28,
-                      command=self._tx_next).pack(side="left", padx=4)
+        _btn(pager, "Next →", command=self._tx_next,
+             width=80, height=28, style="ghost").pack(side="left")
 
         return panel
 
@@ -498,9 +689,9 @@ class VoiceTrackApp(ctk.CTk):
         self._hist_type_filter = val
         for v, b in self._type_filter_btns.items():
             if v == val:
-                b.configure(fg_color="#3b82f6", text_color="#fff")
+                b.configure(fg_color=C("accent"), text_color="#ffffff")
             else:
-                b.configure(fg_color="transparent", text_color="#8892a4")
+                b.configure(fg_color="transparent", text_color=C("text2"))
         self._tx_offset = 0
         self._refresh_history()
 
@@ -509,87 +700,84 @@ class VoiceTrackApp(ctk.CTk):
         self._refresh_history()
 
     def _refresh_history(self):
+        if not hasattr(self, "_hist_scroll"):
+            return
         for w in self._hist_scroll.winfo_children():
             w.destroy()
 
         cat = self._filter_cat.get()
         rows = db.get_transactions(
-            limit=PAGE_SIZE,
-            offset=self._tx_offset,
+            limit=PAGE_SIZE, offset=self._tx_offset,
             category=None if cat == "All categories" else cat,
             tx_type=self._hist_type_filter or None,
             date_from=self._filter_from.get() or None,
             date_to=self._filter_to.get() or None,
         )
-
         search = self._search_var.get().lower()
         if search:
             rows = [r for r in rows if
-                    search in str(r.get("description","")).lower() or
-                    search in str(r.get("category","")).lower()]
+                    search in str(r.get("description", "")).lower() or
+                    search in str(r.get("category", "")).lower()]
 
-        page = self._tx_offset // PAGE_SIZE + 1
-        self._page_label.configure(text=f"Page {page}")
+        self._page_label.configure(
+            text=f"Page {self._tx_offset // PAGE_SIZE + 1}")
 
         if not rows:
-            _label(self._hist_scroll,
-                   "No transactions found", color="#8892a4").pack(pady=32)
+            _lbl(self._hist_scroll, "No transactions found",
+                 color=C("text3")).pack(pady=40)
             return
 
-        for row in rows:
-            self._add_hist_row(row)
+        for i, row in enumerate(rows):
+            self._add_hist_row(row, alt=i % 2 == 1)
 
-    def _add_hist_row(self, row: dict):
-        r = ctk.CTkFrame(self._hist_scroll, fg_color="transparent",
-                         height=44)
+    def _add_hist_row(self, row: dict, alt=False):
+        bg = C("surface2") if alt else "transparent"
+        r = ctk.CTkFrame(self._hist_scroll, fg_color=bg,
+                         corner_radius=8, height=46)
         r.pack(fill="x", pady=1)
         r.pack_propagate(False)
 
-        # DATE
-        _label(r, row.get("date",""), size=12, color="#c8cdd8",
-               width=90, anchor="w").pack(side="left", padx=8)
+        _lbl(r, row.get("date", ""), size=12, color=C("text2"),
+             width=95, anchor="w").pack(side="left", padx=10)
 
-        # TYPE badge
-        tx_type = row.get("type","")
-        badge_color = "#052e16" if tx_type == "income" else "#450a0a"
-        badge_text_color = "#22c55e" if tx_type == "income" else "#f87171"
-        badge = ctk.CTkFrame(r, fg_color=badge_color,
-                             corner_radius=6, width=68, height=22)
+        tx_type = row.get("type", "")
+        if tx_type == "income":
+            badge_bg, badge_fg = C("income_bg"), C("income_fg")
+        else:
+            badge_bg, badge_fg = C("expense_bg"), C("expense_fg")
+
+        badge = ctk.CTkFrame(r, fg_color=badge_bg, corner_radius=6,
+                             width=72, height=24)
         badge.pack(side="left", padx=4)
         badge.pack_propagate(False)
-        _label(badge, tx_type.capitalize(), size=11,
-               weight="bold", color=badge_text_color).pack(expand=True)
+        _lbl(badge, tx_type.capitalize(), size=11, weight="bold",
+             color=badge_fg).pack(expand=True)
 
-        # CATEGORY (colored)
-        cat = row.get("category","Other")
-        cat_color = CAT_COLORS.get(cat, "#94a3b8")
-        _label(r, cat, size=12, weight="bold", color=cat_color,
-               width=110, anchor="w").pack(side="left", padx=8)
+        cat = row.get("category", "Other")
+        cat_color = CAT_COLORS.get(cat, "#64748b")
+        _lbl(r, cat, size=12, weight="bold", color=cat_color,
+             width=120, anchor="w").pack(side="left", padx=8)
 
-        # DESCRIPTION
-        desc = str(row.get("description",""))[:36]
-        _label(r, desc, size=12, color="#8892a4",
-               anchor="w").pack(side="left", fill="x", expand=True, padx=4)
+        desc = str(row.get("description", ""))[:38]
+        _lbl(r, desc, size=12, color=C("text2"),
+             anchor="w").pack(side="left", fill="x", expand=True, padx=4)
 
-        # AMOUNT
         sign = "+" if tx_type == "income" else "-"
-        amt_color = "#22c55e" if tx_type == "income" else "#ef4444"
-        _label(r, f"{sign}{row.get('amount',0):,.0f}",
-               size=13, weight="bold", color=amt_color,
-               width=90, anchor="e").pack(side="left", padx=8)
+        amt_color = C("income_fg") if tx_type == "income" else C("expense_fg")
+        _lbl(r, f"{sign}{row.get('amount', 0):,.0f}",
+             size=13, weight="bold", color=amt_color,
+             width=100, anchor="e").pack(side="left", padx=8)
 
-        # Delete (trash icon)
         ctk.CTkButton(
-            r, text="🗑", width=32, height=28,
-            fg_color="transparent", hover_color="#3a1010",
-            text_color="#ef4444", font=ctk.CTkFont(size=14),
+            r, text="🗑", width=34, height=28,
+            fg_color="transparent", hover_color=C("danger_bg"),
+            text_color=C("danger"), font=ctk.CTkFont(size=14),
             command=lambda rid=row["id"]: self._delete_tx(rid),
-        ).pack(side="left", padx=4)
+        ).pack(side="left", padx=6)
 
     def _delete_tx(self, tx_id: int):
         db.delete_transaction(tx_id)
         self._refresh_history()
-        self._refresh_dashboard()
 
     def _tx_prev(self):
         if self._tx_offset >= PAGE_SIZE:
@@ -600,73 +788,97 @@ class VoiceTrackApp(ctk.CTk):
         self._tx_offset += PAGE_SIZE
         self._refresh_history()
 
-    # ── Add Entry panel ───────────────────────────────────
+    # ── Add Entry ─────────────────────────────────────────
 
     def _build_add_panel(self) -> ctk.CTkFrame:
         panel = ctk.CTkFrame(self._content, fg_color="transparent")
 
         hdr = ctk.CTkFrame(panel, fg_color="transparent")
-        hdr.pack(fill="x", padx=24, pady=(20, 0))
-        _label(hdr, "Add Entry", size=20, weight="bold").pack(side="left")
+        hdr.pack(fill="x", padx=28, pady=(22, 0))
+        _lbl(hdr, "Add Entry", size=22, weight="bold").pack(side="left")
 
-        body = _card(panel)
-        body.pack(fill="x", padx=24, pady=16)
+        # Input card
+        card = _card(panel)
+        card.pack(fill="x", padx=28, pady=16)
 
-        _label(body, "Describe your transaction",
-               size=12, color="#8892a4").pack(anchor="w", padx=16, pady=(14, 4))
+        top_card = ctk.CTkFrame(card, fg_color="transparent")
+        top_card.pack(fill="x", padx=18, pady=(18, 6))
+        _lbl(top_card, "Describe your transaction",
+             size=13, weight="bold").pack(side="left")
+        _lbl(top_card, "Ctrl+Enter to process",
+             size=11, color=C("text3")).pack(side="right")
+
+        # Text input with accent border on focus
+        input_wrap = ctk.CTkFrame(card, fg_color=C("input_bg"),
+                                  corner_radius=10,
+                                  border_width=1,
+                                  border_color=C("border"))
+        input_wrap.pack(fill="x", padx=18, pady=(0, 12))
 
         self._input_box = ctk.CTkTextbox(
-            body, height=80, corner_radius=10,
-            fg_color="#12141c", border_color="#2a2d3e", border_width=1,
-            font=ctk.CTkFont(size=13),
+            input_wrap, height=90, corner_radius=10,
+            fg_color="transparent", border_width=0,
+            text_color=C("text"),
+            font=ctk.CTkFont(size=14),
+            wrap="word",
         )
-        self._input_box.pack(fill="x", padx=16, pady=(0, 10))
+        self._input_box.pack(fill="x", padx=4, pady=4)
 
-        hint = ctk.CTkFrame(body, fg_color="transparent")
-        hint.pack(fill="x", padx=16, pady=(0, 4))
-        _label(hint, 'e.g. "spent 500 on groceries today"  or  "received 50000 salary"',
-               size=11, color="#555e73").pack(side="left")
-        _label(hint, "Ctrl+Enter to process",
-               size=11, color="#555e73").pack(side="right")
+        hint_row = ctk.CTkFrame(card, fg_color="transparent")
+        hint_row.pack(fill="x", padx=18, pady=(0, 4))
+        hints = [
+            ('🛒', '"spent 500 on groceries yesterday"'),
+            ('💰', '"received salary 50000 last month"'),
+            ('🎬', '"movie ticket 1200 and cab 300 today"'),
+        ]
+        for icon, text in hints:
+            chip = ctk.CTkFrame(hint_row, fg_color=C("surface2"),
+                                corner_radius=6)
+            chip.pack(side="left", padx=(0, 6), pady=(0, 10))
+            _lbl(chip, f"{icon} {text}", size=10,
+                 color=C("text3")).pack(padx=8, pady=4)
 
-        btn_row = ctk.CTkFrame(body, fg_color="transparent")
-        btn_row.pack(fill="x", padx=16, pady=(0, 16))
+        # Buttons
+        btn_row = ctk.CTkFrame(card, fg_color="transparent")
+        btn_row.pack(fill="x", padx=18, pady=(0, 18))
 
         self._process_btn = ctk.CTkButton(
-            btn_row, text="▶  Process", width=130, height=36,
-            corner_radius=10, font=ctk.CTkFont(size=13, weight="bold"),
+            btn_row, text="▶  Process", width=140, height=38,
+            corner_radius=10,
+            fg_color=C("accent"), hover_color=C("accent_h"),
+            text_color="#ffffff",
+            font=ctk.CTkFont(size=13, weight="bold"),
             command=self._process_input,
         )
         self._process_btn.pack(side="left", padx=(0, 12))
 
-        self._spinner_frame_widget = ctk.CTkFrame(
-            btn_row, fg_color="transparent")
-        self._spinner_frame_widget.pack(side="left")
-        self._spinner_label = _label(
-            self._spinner_frame_widget, "", size=13, color="#3b82f6")
+        self._spinner_label = _lbl(btn_row, "", size=13, color=C("accent"))
         self._spinner_label.pack(side="left")
 
         self._mic_btn = ctk.CTkButton(
-            btn_row, text="🎙  Microphone", width=130, height=36,
-            corner_radius=10, fg_color="#1e2130",
-            hover_color="#252840", text_color="#c8cdd8",
+            btn_row, text="🎙  Microphone", width=140, height=38,
+            corner_radius=10,
+            fg_color=C("surface2"), hover_color=C("surface3"),
+            text_color=C("text2"),
             command=self._toggle_mic,
         )
         self._mic_btn.pack(side="left", padx=8)
 
-        self._voice_status = _label(btn_row, "", size=11, color="#8892a4")
+        self._voice_status = _lbl(btn_row, "", size=11, color=C("text3"))
         self._voice_status.pack(side="left")
 
-        self._error_label = _label(panel, "", size=12, color="#f87171")
-        self._error_label.pack(anchor="w", padx=24, pady=(0, 4))
+        self._error_label = _lbl(panel, "", size=12, color=C("danger"))
+        self._error_label.pack(anchor="w", padx=28, pady=(0, 4))
 
         self._preview_container = ctk.CTkScrollableFrame(
-            panel, fg_color="transparent")
+            panel, fg_color="transparent",
+            scrollbar_button_color=C("border"),
+            scrollbar_button_hover_color=C("surface3"))
         self._preview_container.pack(fill="both", expand=True,
-                                     padx=24, pady=(0, 16))
+                                     padx=28, pady=(0, 16))
 
         self._init_voice()
-        self.bind("<Control-Return>", lambda _: self._process_input())
+        self.bind("<Control-Return>", lambda _e: self._process_input())
         return panel
 
     def _init_voice(self):
@@ -694,34 +906,35 @@ class VoiceTrackApp(ctk.CTk):
             self._voice_recorder.start()
             self._recording = True
             self._mic_btn.configure(
-                text="⏹  Stop", fg_color="#450a0a", text_color="#f87171")
+                text="⏹  Stop Recording",
+                fg_color=C("danger_bg"), text_color=C("danger"))
         else:
             self._voice_recorder.stop()
             self._recording = False
             self._mic_btn.configure(
-                text="🎙  Microphone", fg_color="#1e2130",
-                text_color="#c8cdd8")
+                text="🎙  Microphone",
+                fg_color=C("surface2"), text_color=C("text2"))
 
     def _on_voice_result(self, text: str):
-        def _update():
+        def _u():
             self._input_box.delete("1.0", "end")
             self._input_box.insert("1.0", text)
             self._process_input()
-        self.after(0, _update)
+        self.after(0, _u)
 
     # ── Spinner ───────────────────────────────────────────
 
     def _start_spinner(self):
-        _frames = ["⠋","⠙","⠹","⠸","⠼","⠴","⠦","⠧","⠇","⠏"]
+        _f = ["⠋","⠙","⠹","⠸","⠼","⠴","⠦","⠧","⠇","⠏"]
         self._spinner_active = True
-        self._spinner_frame = 0
+        self._spinner_tick = 0
 
         def _tick():
             if not self._spinner_active:
                 return
             self._spinner_label.configure(
-                text=f"{_frames[self._spinner_frame % len(_frames)]}  Processing…")
-            self._spinner_frame += 1
+                text=f"{_f[self._spinner_tick % len(_f)]}  Processing…")
+            self._spinner_tick += 1
             self.after(80, _tick)
         _tick()
 
@@ -729,13 +942,13 @@ class VoiceTrackApp(ctk.CTk):
         self._spinner_active = False
         self._spinner_label.configure(text="")
 
-    # ── Process + auto-save ───────────────────────────────
+    # ── Process & auto-save ───────────────────────────────
 
     def _process_input(self):
-        raw_text = self._input_box.get("1.0", "end").strip()
-        if not raw_text:
+        raw = self._input_box.get("1.0", "end").strip()
+        if not raw:
             return
-        lines = [ln.strip() for ln in raw_text.splitlines() if ln.strip()]
+        lines = [ln.strip() for ln in raw.splitlines() if ln.strip()]
         if not lines:
             return
 
@@ -777,77 +990,87 @@ class VoiceTrackApp(ctk.CTk):
             db.insert_transaction(tx)
 
         count = len(all_txs)
-        msg = (f"✓  Successfully added {count} "
-               f"transaction{'s' if count > 1 else ''}.")
-        if errors:
-            msg += f"  ({len(errors)} line(s) skipped.)"
 
-        card = _card(self._preview_container)
-        card.pack(fill="x", pady=6)
+        # Success card
+        scard = ctk.CTkFrame(self._preview_container,
+                             fg_color=C("success_bg"),
+                             corner_radius=12,
+                             border_width=1,
+                             border_color=C("success"))
+        scard.pack(fill="x", pady=6)
 
-        row = ctk.CTkFrame(card, fg_color="transparent")
-        row.pack(fill="x", padx=16, pady=14)
+        inner = ctk.CTkFrame(scard, fg_color="transparent")
+        inner.pack(fill="x", padx=16, pady=14)
 
-        ic = ctk.CTkFrame(row, fg_color="#052e16", corner_radius=20,
-                          width=36, height=36)
-        ic.pack(side="left", padx=(0, 12))
+        ic = ctk.CTkFrame(inner, fg_color=C("success"),
+                          corner_radius=20, width=36, height=36)
+        ic.pack(side="left", padx=(0, 14))
         ic.pack_propagate(False)
-        _label(ic, "✓", size=16, weight="bold",
-               color="#22c55e").pack(expand=True)
+        _lbl(ic, "✓", size=16, weight="bold",
+             color="#ffffff").pack(expand=True)
 
-        info = ctk.CTkFrame(row, fg_color="transparent")
-        info.pack(side="left")
-        _label(info, msg, size=13, weight="bold",
-               color="#22c55e").pack(anchor="w")
-        _label(info,
-               "  ·  ".join(
-                   f"{'+' if t['type']=='income' else '-'}"
-                   f"{t['amount']:,.0f} {t.get('category','')}"
-                   for t in all_txs),
-               size=11, color="#8892a4").pack(anchor="w", pady=(2, 0))
+        info = ctk.CTkFrame(inner, fg_color="transparent")
+        info.pack(side="left", fill="x", expand=True)
+
+        msg = (f"Successfully added {count} "
+               f"transaction{'s' if count > 1 else ''}!")
+        if errors:
+            msg += f"  ({len(errors)} line(s) skipped)"
+        _lbl(info, msg, size=13, weight="bold",
+             color=C("success")).pack(anchor="w")
+
+        detail = "  ·  ".join(
+            f"{'+'if t['type']=='income' else '-'}"
+            f"{t['amount']:,.0f}  {t.get('category','')}"
+            for t in all_txs
+        )
+        _lbl(info, detail, size=11, color=C("text2")).pack(
+            anchor="w", pady=(2, 0))
 
         self._input_box.delete("1.0", "end")
-        self.after(4000, card.destroy)
+        self.after(4000, scard.destroy)
 
-    # ── Reports panel ─────────────────────────────────────
+    # ── Reports ───────────────────────────────────────────
 
     def _build_reports_panel(self) -> ctk.CTkFrame:
         panel = ctk.CTkFrame(self._content, fg_color="transparent")
 
         hdr = ctk.CTkFrame(panel, fg_color="transparent")
-        hdr.pack(fill="x", padx=24, pady=(20, 0))
-        _label(hdr, "Reports", size=20, weight="bold").pack(side="left")
-        ctk.CTkButton(hdr, text="Export CSV", width=110, height=32,
-                      command=self._export_csv).pack(side="right")
+        hdr.pack(fill="x", padx=28, pady=(22, 0))
+        _lbl(hdr, "Reports", size=22, weight="bold").pack(side="left")
+        _btn(hdr, "⬇  Export CSV", command=self._export_csv,
+             width=120, height=32, style="ghost").pack(side="right")
 
         self._report_scroll = ctk.CTkScrollableFrame(
-            panel, fg_color="transparent")
+            panel, fg_color="transparent",
+            scrollbar_button_color=C("border"),
+            scrollbar_button_hover_color=C("surface3"))
         self._report_scroll.pack(fill="both", expand=True,
-                                 padx=24, pady=12)
+                                 padx=28, pady=14)
         return panel
 
     def _refresh_reports(self):
         for w in self._report_scroll.winfo_children():
             w.destroy()
-
         monthly = db.get_monthly_totals(6)
-
-        for fig_fn, title in [
-            (lambda: charts.balance_trend(monthly), "Balance Trend"),
+        for fn, title in [
+            (lambda: charts.balance_trend(monthly), "Balance Trend — Last 6 Months"),
             (lambda: charts.monthly_income_vs_expense(monthly),
-             "Income vs Expense"),
+             "Income vs Expense — Last 6 Months"),
         ]:
             c = _card(self._report_scroll)
             c.pack(fill="x", pady=8)
-            _label(c, title, size=13, weight="bold").pack(
-                anchor="w", padx=16, pady=(12, 4))
-            w = _embed_figure(fig_fn(), c)
-            w.pack(fill="x", padx=8, pady=(0, 12))
+            _lbl(c, title, size=13, weight="bold").pack(
+                anchor="w", padx=18, pady=(16, 4))
+            ctk.CTkFrame(c, fg_color=C("border"), height=1).pack(
+                fill="x", padx=18, pady=(0, 8))
+            w = _embed_figure(fn(), c)
+            w.pack(fill="x", padx=12, pady=(0, 14))
 
     def _export_csv(self):
         path = filedialog.asksaveasfilename(
             defaultextension=".csv",
-            filetypes=[("CSV files","*.csv"),("All files","*.*")],
+            filetypes=[("CSV files", "*.csv"), ("All files", "*.*")],
             title="Export Transactions",
         )
         if not path:
