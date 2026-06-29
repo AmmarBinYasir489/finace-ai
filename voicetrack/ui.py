@@ -23,6 +23,8 @@ _PANEL_DASHBOARD = "Dashboard"
 _PANEL_ADD       = "Add Entry"
 _PANEL_HISTORY   = "History"
 _PANEL_REPORTS   = "Reports"
+_PANEL_LOANS     = "Loans"
+_PANEL_SHARED    = "Shared"
 
 PAGE_SIZE = 50
 
@@ -215,6 +217,8 @@ class VoiceTrackApp(ctk.CTk):
             ("📋", "History",    _PANEL_HISTORY),
             ("📈", "Reports",    _PANEL_REPORTS),
         ]
+        nav.insert(3, ("L", "Loans", _PANEL_LOANS))
+        nav.insert(4, ("S", "Shared", _PANEL_SHARED))
         for icon, label, panel in nav:
             btn = ctk.CTkButton(
                 self._sb,
@@ -292,6 +296,8 @@ class VoiceTrackApp(ctk.CTk):
         self._panels[_PANEL_DASHBOARD] = self._build_dashboard_panel()
         self._panels[_PANEL_ADD]       = self._build_add_panel()
         self._panels[_PANEL_HISTORY]   = self._build_history_panel()
+        self._panels[_PANEL_LOANS]     = self._build_loans_panel()
+        self._panels[_PANEL_SHARED]    = self._build_shared_panel()
         self._panels[_PANEL_REPORTS]   = self._build_reports_panel()
 
     def _show_panel(self, name: str):
@@ -305,6 +311,10 @@ class VoiceTrackApp(ctk.CTk):
         elif name == _PANEL_HISTORY:
             self._tx_offset = 0
             self._refresh_history()
+        elif name == _PANEL_LOANS:
+            self._refresh_loans()
+        elif name == _PANEL_SHARED:
+            self._refresh_shared()
         elif name == _PANEL_REPORTS:
             self._refresh_reports()
 
@@ -332,7 +342,7 @@ class VoiceTrackApp(ctk.CTk):
         card_defs = [
             ("income_month",  "Income",       "↑", C("income_fg"),  C("income_bg")),
             ("expense_month", "Expenses",     "↓", C("expense_fg"), C("expense_bg")),
-            ("balance",       "Net Balance",  "◈", C("accent"),     C("accent_dim")),
+            ("balance",       "Available Cash",  "◈", C("accent"),     C("accent_dim")),
         ]
         for key, title, icon, color, bg in card_defs:
             c = _card(cards_row)
@@ -364,6 +374,24 @@ class VoiceTrackApp(ctk.CTk):
             _lbl(inner, "This period", size=10, color=C("text3")).pack(anchor="w")
 
         # ── Period tabs (pill style) ──
+        finance_row = ctk.CTkFrame(panel, fg_color="transparent")
+        finance_row.pack(fill="x", padx=28, pady=(0, 12))
+        self._finance_labels: dict[str, ctk.CTkLabel] = {}
+        for key, title in [
+            ("cash_outflow", "Cash Outflow"),
+            ("personal_expenses", "Personal Expenses"),
+            ("outstanding_receivables", "Receivables"),
+            ("outstanding_payables", "Payables"),
+            ("net_cash", "Net Cash"),
+            ("net_worth", "Net Worth"),
+        ]:
+            mini = _surface(finance_row, radius=10)
+            mini.pack(side="left", fill="x", expand=True, padx=4)
+            _lbl(mini, title, size=10, color=C("text3")).pack(anchor="w", padx=10, pady=(8, 0))
+            lbl = _lbl(mini, "PKR 0", size=13, weight="bold")
+            lbl.pack(anchor="w", padx=10, pady=(0, 8))
+            self._finance_labels[key] = lbl
+
         tab_bg = _surface(panel, radius=10)
         tab_bg.pack(fill="x", padx=28, pady=(0, 14))
         tab_bg.configure(fg_color=C("surface2"))
@@ -461,15 +489,30 @@ class VoiceTrackApp(ctk.CTk):
             return True
 
         txs = [t for t in all_txs if _in_period(t)]
-        income  = sum(t["amount"] for t in txs if t["type"] == "income")
-        expense = sum(t["amount"] for t in txs if t["type"] == "expense")
-        balance = income - expense
+        income  = sum(
+            t["amount"] for t in txs
+            if t["type"] == "income" and (t.get("kind") in (None, "standard"))
+        )
+        expense = sum(
+            t["amount"] for t in txs
+            if t["type"] == "expense" and (t.get("kind") in (None, "standard", "shared_expense"))
+        )
+        cash_balance = sum(
+            float(t["cash_flow"]) if t.get("cash_flow") is not None
+            else (float(t["amount"]) if t["type"] == "income" else -float(t["amount"]))
+            for t in txs
+        )
 
         self._sum_labels["income_month"].configure(text=f"PKR {income:,.0f}")
         self._sum_labels["expense_month"].configure(text=f"PKR {expense:,.0f}")
-        bal_color = C("income_fg") if balance >= 0 else C("expense_fg")
+        bal_color = C("income_fg") if cash_balance >= 0 else C("expense_fg")
         self._sum_labels["balance"].configure(
-            text=f"PKR {balance:,.0f}", text_color=bal_color)
+            text=f"PKR {cash_balance:,.0f}", text_color=bal_color)
+
+        finance = db.get_finance_summary()
+        for key, label in getattr(self, "_finance_labels", {}).items():
+            value = finance.get(key, 0)
+            label.configure(text=f"PKR {value:,.0f}")
 
         self._render_cat_bars(txs)
         self._render_recent(txs)
@@ -480,7 +523,7 @@ class VoiceTrackApp(ctk.CTk):
 
         totals: dict[str, float] = {}
         for t in txs:
-            if t["type"] == "expense":
+            if t["type"] == "expense" and (t.get("kind") in (None, "standard", "shared_expense")):
                 cat = t.get("category", "Other")
                 totals[cat] = totals.get(cat, 0) + t["amount"]
 
@@ -742,16 +785,25 @@ class VoiceTrackApp(ctk.CTk):
              width=95, anchor="w").pack(side="left", padx=10)
 
         tx_type = row.get("type", "")
+        kind = row.get("kind") or "standard"
+        kind_labels = {
+            "loan_given": "Loan Given",
+            "loan_taken": "Loan Taken",
+            "loan_repayment_received": "Repay In",
+            "loan_repayment_made": "Repay Out",
+            "shared_expense": "Shared",
+        }
+        display_type = kind_labels.get(kind, tx_type.capitalize())
         if tx_type == "income":
             badge_bg, badge_fg = C("income_bg"), C("income_fg")
         else:
             badge_bg, badge_fg = C("expense_bg"), C("expense_fg")
 
         badge = ctk.CTkFrame(r, fg_color=badge_bg, corner_radius=6,
-                             width=72, height=24)
+                             width=92, height=24)
         badge.pack(side="left", padx=4)
         badge.pack_propagate(False)
-        _lbl(badge, tx_type.capitalize(), size=11, weight="bold",
+        _lbl(badge, display_type, size=10, weight="bold",
              color=badge_fg).pack(expand=True)
 
         cat = row.get("category", "Other")
@@ -976,21 +1028,35 @@ class VoiceTrackApp(ctk.CTk):
         self._stop_spinner()
 
         all_txs = []
+        finance_plans = []
         for res in results:
-            all_txs.extend(extractor.normalize_transactions(res))
+            if res.get("intent") in {
+                "loan_given",
+                "loan_taken",
+                "loan_repayment_received",
+                "loan_repayment_made",
+                "shared_expense",
+            }:
+                finance_plans.append(res)
+            else:
+                all_txs.extend(extractor.normalize_transactions(res))
 
-        if errors and not all_txs:
+        if errors and not all_txs and not finance_plans:
             self._error_label.configure(text=errors[0])
             return
-        if not all_txs:
+        if not all_txs and not finance_plans:
             self._error_label.configure(
                 text="Could not parse any transaction.")
             return
 
+        inserted_txs = []
         for tx in all_txs:
-            db.insert_transaction(tx)
+            tx_id = db.insert_transaction(tx)
+            inserted_txs.append(db.get_transaction(tx_id))
+        for plan in finance_plans:
+            inserted_txs.extend(db.apply_finance_plan(plan))
 
-        count = len(all_txs)
+        count = len(inserted_txs)
 
         # Success card
         scard = ctk.CTkFrame(self._preview_container,
@@ -1023,7 +1089,7 @@ class VoiceTrackApp(ctk.CTk):
         detail = "  ·  ".join(
             f"{'+'if t['type']=='income' else '-'}"
             f"{t['amount']:,.0f}  {t.get('category','')}"
-            for t in all_txs
+            for t in inserted_txs
         )
         _lbl(info, detail, size=11, color=C("text2")).pack(
             anchor="w", pady=(2, 0))
@@ -1032,6 +1098,107 @@ class VoiceTrackApp(ctk.CTk):
         self.after(4000, scard.destroy)
 
     # ── Reports ───────────────────────────────────────────
+
+    def _build_loans_panel(self) -> ctk.CTkFrame:
+        panel = ctk.CTkFrame(self._content, fg_color="transparent")
+        hdr = ctk.CTkFrame(panel, fg_color="transparent")
+        hdr.pack(fill="x", padx=28, pady=(22, 0))
+        _lbl(hdr, "Loan Management", size=22, weight="bold").pack(side="left")
+        _btn(hdr, "Refresh", command=self._refresh_loans,
+             width=100, height=32, style="ghost").pack(side="right")
+
+        self._loans_scroll = ctk.CTkScrollableFrame(
+            panel, fg_color="transparent",
+            scrollbar_button_color=C("border"),
+            scrollbar_button_hover_color=C("surface3"))
+        self._loans_scroll.pack(fill="both", expand=True, padx=28, pady=14)
+        return panel
+
+    def _refresh_loans(self):
+        if not hasattr(self, "_loans_scroll"):
+            return
+        for w in self._loans_scroll.winfo_children():
+            w.destroy()
+
+        accounts = db.get_loan_accounts()
+        if not accounts:
+            _lbl(self._loans_scroll, "No loan accounts yet",
+                 color=C("text3")).pack(pady=40)
+            return
+
+        for account in accounts:
+            card = _card(self._loans_scroll)
+            card.pack(fill="x", pady=6)
+            top = ctk.CTkFrame(card, fg_color="transparent")
+            top.pack(fill="x", padx=16, pady=(14, 4))
+            _lbl(top, account["person_name"], size=15,
+                 weight="bold").pack(side="left")
+            status_color = C("success") if account["status"] == "Paid" else C("warning")
+            _lbl(top, account["status"], size=12, weight="bold",
+                 color=status_color).pack(side="right")
+
+            loan_label = "Money Owed To Me" if account["loan_type"] == "owed_to_me" else "Money I Owe"
+            body = ctk.CTkFrame(card, fg_color="transparent")
+            body.pack(fill="x", padx=16, pady=(0, 12))
+            _lbl(body, loan_label, size=11, color=C("text2")).pack(anchor="w")
+            amount_color = C("income_fg") if account["loan_type"] == "owed_to_me" else C("expense_fg")
+            _lbl(body, f"Outstanding Balance: PKR {account['current_balance']:,.0f}",
+                 size=18, weight="bold", color=amount_color).pack(anchor="w", pady=(2, 0))
+            _lbl(body, f"Last activity: {account['last_activity']}",
+                 size=10, color=C("text3")).pack(anchor="w", pady=(2, 0))
+
+    def _build_shared_panel(self) -> ctk.CTkFrame:
+        panel = ctk.CTkFrame(self._content, fg_color="transparent")
+        hdr = ctk.CTkFrame(panel, fg_color="transparent")
+        hdr.pack(fill="x", padx=28, pady=(22, 0))
+        _lbl(hdr, "Shared Expenses", size=22, weight="bold").pack(side="left")
+        _btn(hdr, "Refresh", command=self._refresh_shared,
+             width=100, height=32, style="ghost").pack(side="right")
+
+        self._shared_scroll = ctk.CTkScrollableFrame(
+            panel, fg_color="transparent",
+            scrollbar_button_color=C("border"),
+            scrollbar_button_hover_color=C("surface3"))
+        self._shared_scroll.pack(fill="both", expand=True, padx=28, pady=14)
+        return panel
+
+    def _refresh_shared(self):
+        if not hasattr(self, "_shared_scroll"):
+            return
+        for w in self._shared_scroll.winfo_children():
+            w.destroy()
+
+        groups = db.get_shared_expense_groups()
+        if not groups:
+            _lbl(self._shared_scroll, "No shared expenses yet",
+                 color=C("text3")).pack(pady=40)
+            return
+
+        for group in groups:
+            card = _card(self._shared_scroll)
+            card.pack(fill="x", pady=6)
+            top = ctk.CTkFrame(card, fg_color="transparent")
+            top.pack(fill="x", padx=16, pady=(14, 4))
+            _lbl(top, group.get("description") or "Shared expense",
+                 size=15, weight="bold").pack(side="left")
+            _lbl(top, group["date"], size=11,
+                 color=C("text3")).pack(side="right")
+
+            body = ctk.CTkFrame(card, fg_color="transparent")
+            body.pack(fill="x", padx=16, pady=(0, 12))
+            summary = (
+                f"Total paid PKR {group['total_paid']:,.0f}  |  "
+                f"My share PKR {group['my_share']:,.0f}  |  "
+                f"Receivable PKR {group['others_share']:,.0f}"
+            )
+            _lbl(body, summary, size=12, color=C("text2")).pack(anchor="w")
+            participants = db.get_shared_expense_participants(group["id"])
+            if participants:
+                text = "  |  ".join(
+                    f"{p['person_name']}: PKR {p['share_amount']:,.0f}"
+                    for p in participants
+                )
+                _lbl(body, text, size=11, color=C("text3")).pack(anchor="w", pady=(4, 0))
 
     def _build_reports_panel(self) -> ctk.CTkFrame:
         panel = ctk.CTkFrame(self._content, fg_color="transparent")

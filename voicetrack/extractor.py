@@ -481,6 +481,11 @@ def warmup_async() -> None:
 def extract(user_input: str) -> dict:
     """Extract one or more transactions from natural language."""
     from voicetrack import fallback
+    from voicetrack.finance_intents import parse_special_intent
+
+    special = parse_special_intent(user_input)
+    if special:
+        return special
 
     if _ollama_reachable():
         last_extractor_result: dict | None = None
@@ -510,6 +515,14 @@ def extract(user_input: str) -> dict:
 
 def normalize_transactions(result: dict) -> list[dict]:
     """Return a list shape for GUI saving code."""
+    if result.get("intent") in {
+        "loan_given",
+        "loan_taken",
+        "loan_repayment_received",
+        "loan_repayment_made",
+        "shared_expense",
+    }:
+        return []
     if "transactions" in result:
         return result["transactions"]
     if "error" in result:
