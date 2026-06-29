@@ -868,24 +868,26 @@ class VoiceTrackApp(ctk.CTk):
                                   border_color=C("border"))
         input_wrap.pack(fill="x", padx=12, pady=12)
 
-        self._input_box = ctk.CTkTextbox(
+        self._input_box = ctk.CTkEntry(
             input_wrap, height=42, corner_radius=10,
             fg_color="transparent", border_width=0,
             text_color=C("text"),
+            placeholder_text="Type naturally, e.g. 'I lent Ali 5000' or 'cab 500 and dinner 900 split equally'",
+            placeholder_text_color=C("text3"),
             font=ctk.CTkFont(size=14),
-            wrap="word",
         )
-        self._input_box.pack(fill="x", padx=4, pady=4)
+        self._input_box.pack(fill="x", padx=8, pady=4)
         self._input_placeholder = _lbl(
             input_wrap,
             "Type naturally, e.g. “I lent Ali 5000” or “cab 500 and dinner 900 split equally”",
             size=12,
             color=C("text3"),
         )
-        self._input_placeholder.place(x=18, y=15)
+        self._input_placeholder.place_forget()
         self._input_box.bind("<KeyRelease>", self._sync_input_placeholder)
         self._input_box.bind("<FocusIn>", self._sync_input_placeholder)
         self._input_box.bind("<FocusOut>", self._sync_input_placeholder)
+        self._input_placeholder.bind("<Button-1>", self._focus_input_box)
         self._input_placeholder.configure(
             text="Type naturally, e.g. 'I lent Ali 5000' or 'cab 500 and dinner 900 split equally'"
         )
@@ -955,13 +957,10 @@ class VoiceTrackApp(ctk.CTk):
         return panel
 
     def _sync_input_placeholder(self, _event=None):
-        if not hasattr(self, "_input_placeholder"):
-            return
-        text = self._input_box.get("1.0", "end").strip()
-        if text:
-            self._input_placeholder.place_forget()
-        else:
-            self._input_placeholder.place(x=18, y=15)
+        return
+
+    def _focus_input_box(self, _event=None):
+        self._input_box.focus_set()
 
     def _init_voice(self):
         try:
@@ -999,8 +998,8 @@ class VoiceTrackApp(ctk.CTk):
 
     def _on_voice_result(self, text: str):
         def _u():
-            self._input_box.delete("1.0", "end")
-            self._input_box.insert("1.0", text)
+            self._input_box.delete(0, "end")
+            self._input_box.insert(0, text)
             self._process_input()
         self.after(0, _u)
 
@@ -1027,7 +1026,7 @@ class VoiceTrackApp(ctk.CTk):
     # ── Process & auto-save ───────────────────────────────
 
     def _process_input(self):
-        raw = self._input_box.get("1.0", "end").strip()
+        raw = self._input_box.get().strip()
         if not raw:
             return
         lines = [ln.strip() for ln in raw.splitlines() if ln.strip()]
@@ -1123,7 +1122,7 @@ class VoiceTrackApp(ctk.CTk):
         _lbl(info, detail, size=11, color=C("text2")).pack(
             anchor="w", pady=(2, 0))
 
-        self._input_box.delete("1.0", "end")
+        self._input_box.delete(0, "end")
         self.after(4000, scard.destroy)
 
     # ── Reports ───────────────────────────────────────────
