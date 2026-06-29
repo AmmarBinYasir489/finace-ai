@@ -24,24 +24,6 @@ def missing_voice_dependencies() -> list[str]:
     return [name for name, module in packages.items() if importlib.util.find_spec(module) is None]
 
 
-def listen_once(timeout: int = 5, phrase_time_limit: int = 8) -> str:
-    """Capture one phrase from the microphone and return recognized text."""
-    import speech_recognition as sr
-
-    recognizer = sr.Recognizer()
-    with sr.Microphone() as source:
-        recognizer.adjust_for_ambient_noise(source, duration=0.5)
-        audio = recognizer.listen(source, timeout=timeout, phrase_time_limit=phrase_time_limit)
-
-    # Sphinx keeps voice recognition offline. If it is missing, users can still type.
-    try:
-        return recognizer.recognize_sphinx(audio)
-    except Exception as exc:
-        raise RuntimeError(
-            "Offline speech recognition is not available. Install pocketsphinx or use text input."
-        ) from exc
-
-
 def listen_until_stopped(
     stop_event: Event,
     on_text: TextCallback,

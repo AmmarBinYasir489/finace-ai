@@ -29,7 +29,7 @@ class TransactionPipeline:
             raise ExtractionError("Please type or speak a transaction first.")
         now = now or datetime.now()
         extracted = self.extractor.extract(text.strip(), now=now)
-        return normalize_extraction(extracted, text.strip(), now)
+        return normalize_preview(extracted, text.strip(), now)
 
     def save(self, item: dict) -> dict:
         """Save a normalized transaction and notify the UI."""
@@ -39,6 +39,13 @@ class TransactionPipeline:
         if self.on_saved:
             self.on_saved(saved)
         return saved
+
+    def save_many(self, items: list[dict]) -> list[dict]:
+        """Save multiple normalized transactions and notify the UI once per row."""
+        saved_items = []
+        for item in items:
+            saved_items.append(self.save(item))
+        return saved_items
 
     def process_and_save(self, text: str, now: datetime | None = None) -> dict:
         """Convenience method used by tests and quick entry flows."""
@@ -68,14 +75,17 @@ def normalize_extraction(extracted: dict, original_text: str, now: datetime) -> 
         raise ExtractionError("Date must be in YYYY-MM-DD format or a supported relative phrase.") from exc
 
     raw_time = extracted.get("time")
-    if raw_time in {None, "", "null", "None"}:
+    if raw_time in {None, "", "null", "None", "none"}:
         time_value = now.strftime("%H:%M")
     else:
         time_text = str(raw_time).strip()
-        try:
-            time_value = datetime.strptime(time_text, "%H:%M").strftime("%H:%M")
-        except ValueError as exc:
-            raise ExtractionError("Time must be in HH:MM format.") from exc
+        if not time_text:
+            time_value = now.strftime("%H:%M")
+        else:
+            try:
+                time_value = datetime.strptime(time_text, "%H:%M").strftime("%H:%M")
+            except ValueError as exc:
+                raise ExtractionError("Time must be in HH:MM format.") from exc
 
     confidence = str(extracted.get("confidence") or "low").lower()
     if confidence not in {"high", "low"}:
@@ -91,3 +101,19 @@ def normalize_extraction(extracted: dict, original_text: str, now: datetime) -> 
         "time": time_value,
         "confidence": confidence,
     }
+
+
+def normalize_preview(extracted: dict, original_text: str, now: datetime) -> dict:
+    """Normalize either one extracted transaction or a multi-transaction preview."""
+    if "transactions" not in extracted:
+        return normalize_extraction(extracted, original_text, now)
+    rows = extracted.get("transactions")
+    if not isinstance(rows, list) or not rows:
+        raise ExtractionError("Could not understand input. Please rephrase.")
+    normalized_rows = []
+    for row in rows:
+        if not isinstance(row, dict):
+            raise ExtractionError("Could not understand one of the transactions.")
+        normalized_rows.append(normalize_extraction(row, row.get("description", original_text), now))
+    confidence = "low" if any(row.get("confidence") == "low" for row in normalized_rows) else "high"
+    return {"transactions": normalized_rows, "confidence": confidence}

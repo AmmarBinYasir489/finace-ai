@@ -17,7 +17,7 @@ from .dates import resolve_transaction_date
 
 SYSTEM_PROMPT = """You are a financial data extraction assistant. Extract structured data from the user's natural language input and return ONLY valid JSON -- no explanation, no markdown, no preamble.
 
-Return this exact structure:
+For one transaction, return this exact structure:
 {
   "type": "expense" or "income",
   "amount": number (e.g. 2000),
@@ -30,6 +30,26 @@ Return this exact structure:
 
 If the input is unclear or not a financial transaction, return:
 { "error": "Could not understand input. Please rephrase." }
+
+If the user mentions multiple separate transactions, return:
+{
+  "transactions": [
+    {
+      "type": "expense" or "income",
+      "amount": number,
+      "category": one allowed category,
+      "description": short corrected phrase,
+      "date": "YYYY-MM-DD" or "today",
+      "time": "HH:MM" or null,
+      "confidence": "high" or "low"
+    }
+  ]
+}
+
+Category rules:
+- If the amount is for cab, taxi, Uber, Careem, bus, train, rickshaw, fuel, petrol, fare, or ride, use Transport.
+- If the sentence mentions a destination or restaurant but the amount is attached to cab/fare/ride, use Transport, not Food & Groceries.
+- Use Food & Groceries only when the amount is for food, groceries, lunch, dinner, breakfast, restaurant, fries, burger, pizza, tea, or coffee.
 """
 
 
@@ -98,15 +118,27 @@ class OllamaExtractor:
 
 
 def _parse_model_json(raw: str) -> dict:
-    """Parse JSON even if a model accidentally wraps it in extra text."""
+    """Parse JSON even if a model accidentally wraps it in extra text or returns an array."""
     raw = raw.strip()
     try:
-        return json.loads(raw)
+        result = json.loads(raw)
+        if isinstance(result, list):
+            return {"transactions": result}
+        return result
     except json.JSONDecodeError:
-        match = re.search(r"\{.*\}", raw, flags=re.DOTALL)
-        if not match:
-            raise ValueError("Model did not return JSON")
-        return json.loads(match.group(0))
+        pass
+    match = re.search(r"\[.*\]", raw, flags=re.DOTALL)
+    if match:
+        try:
+            items = json.loads(match.group(0))
+            if isinstance(items, list) and items:
+                return {"transactions": items}
+        except json.JSONDecodeError:
+            pass
+    match = re.search(r"\{.*\}", raw, flags=re.DOTALL)
+    if not match:
+        raise ValueError("Model did not return JSON")
+    return json.loads(match.group(0))
 
 
 def category_or_other(value: str | None) -> str:
@@ -120,7 +152,28 @@ def rule_based_extract(text: str, now: datetime | None = None) -> dict:
     """Low-confidence rescue parser for simple entries when Ollama is slow."""
     now = now or datetime.now()
     cleaned = text.strip()
-    match = re.search(r"(?<!\w)(\d+(?:,\d{3})*(?:\.\d+)?)(?!\w)", cleaned)
+    parts = _split_transaction_parts(cleaned)
+    if len(parts) > 1:
+        transactions = []
+        for part in parts:
+            extracted = _rule_based_extract_one(part, now)
+            if "error" in extracted:
+                return {"error": "Could not understand one of the transactions. Please enter it separately."}
+            transactions.append(extracted)
+        return {"transactions": transactions, "confidence": "low"}
+
+    return _rule_based_extract_one(cleaned, now)
+
+
+def _rule_based_extract_one(text: str, now: datetime) -> dict:
+    """Extract one transaction with local rules."""
+    cleaned = text.strip()
+    number_pattern = r"(?<!\w)(\d+(?:,\d{3})*(?:\.\d+)?)(?!\w)"
+    number_matches = list(re.finditer(number_pattern, cleaned))
+    if len(number_matches) > 1:
+        return {"error": "Multiple transactions detected."}
+
+    match = number_matches[0] if number_matches else None
     amount_text = ""
     if match:
         amount = float(match.group(1).replace(",", ""))
@@ -132,8 +185,8 @@ def rule_based_extract(text: str, now: datetime | None = None) -> dict:
 
     lowered = cleaned.lower()
     tx_type = "income" if any(word in lowered for word in ["received", "salary", "income", "earned", "paid me", "freelance"]) else "expense"
-    category = _guess_category(lowered, tx_type)
-    description = _clean_description(cleaned, amount_text)
+    category = _guess_category(lowered, tx_type, amount_text)
+    description = _clean_description(cleaned, amount_text, category)
     return {
         "type": tx_type,
         "amount": amount,
@@ -145,7 +198,7 @@ def rule_based_extract(text: str, now: datetime | None = None) -> dict:
     }
 
 
-def _guess_category(lowered: str, tx_type: str) -> str:
+def _guess_category(lowered: str, tx_type: str, amount_text: str = "") -> str:
     """Classify common words without doing any arithmetic."""
     if tx_type == "income":
         if "salary" in lowered:
@@ -153,9 +206,12 @@ def _guess_category(lowered: str, tx_type: str) -> str:
         if "freelance" in lowered or "client" in lowered or "project" in lowered:
             return "Freelance"
         return "Other"
+    amount_category = _category_near_amount(lowered, amount_text)
+    if amount_category:
+        return amount_category
     keyword_map = [
-        ("Food & Groceries", ["food", "grocery", "groceries", "lunch", "dinner", "breakfast", "restaurant"]),
-        ("Transport", ["uber", "careem", "fuel", "petrol", "bus", "train", "transport", "taxi"]),
+        ("Transport", ["cab", "uber", "careem", "fuel", "petrol", "bus", "train", "transport", "taxi", "rickshaw", "fare", "ride"]),
+        ("Food & Groceries", ["food", "grocery", "groceries", "lunch", "dinner", "breakfast", "restaurant", "fries", "burger", "pizza", "tea", "coffee"]),
         ("Utilities", ["electricity", "gas", "water", "internet", "bill", "utility"]),
         ("Health", ["doctor", "medicine", "hospital", "health", "clinic"]),
         ("Education", ["school", "book", "course", "tuition", "education"]),
@@ -169,8 +225,54 @@ def _guess_category(lowered: str, tx_type: str) -> str:
     return "Other"
 
 
-def _clean_description(text: str, amount_text: str) -> str:
+def _split_transaction_parts(text: str) -> list[str]:
+    """Split obvious multi-transaction prompts into simple clauses."""
+    pieces = [part.strip(" .,-") for part in re.split(r"\s+(?:and|then|also)\s+|;", text, flags=re.I) if part.strip(" .,-")]
+    if len(pieces) < 2:
+        return [text]
+    amount_pattern = r"(?<!\w)\d+(?:,\d{3})*(?:\.\d+)?(?!\w)"
+    pieces_with_amount = [part for part in pieces if re.search(amount_pattern, part)]
+    if len(pieces_with_amount) < 2:
+        return [text]
+    return pieces
+
+
+def _category_near_amount(lowered: str, amount_text: str) -> str | None:
+    """Prefer the category whose words are closest to the detected amount."""
+    if not amount_text:
+        return None
+    amount_index = lowered.find(amount_text.lower())
+    if amount_index < 0:
+        return None
+
+    keyword_map = {
+        "Transport": ["cab", "taxi", "uber", "careem", "bus", "train", "rickshaw", "fare", "ride", "fuel", "petrol", "transport"],
+        "Food & Groceries": ["food", "grocery", "groceries", "lunch", "dinner", "breakfast", "restaurant", "fries", "burger", "pizza", "tea", "coffee"],
+        "Utilities": ["electricity", "gas", "water", "internet", "bill", "utility"],
+        "Health": ["doctor", "medicine", "hospital", "health", "clinic"],
+        "Education": ["school", "book", "course", "tuition", "education"],
+        "Shopping": ["shopping", "shop", "bought", "purchase", "purchased", "clothes", "shoes", "soap", "shampoo", "detergent", "toothpaste"],
+        "Entertainment": ["movie", "netflix", "game", "entertainment"],
+        "Rent": ["rent", "house payment"],
+    }
+    best_category: str | None = None
+    best_distance = 9999
+    for category, words in keyword_map.items():
+        for word in words:
+            for match in re.finditer(rf"\b{re.escape(word)}\b", lowered):
+                distance = abs(match.start() - amount_index)
+                if distance < best_distance:
+                    best_distance = distance
+                    best_category = category
+    return best_category if best_distance <= 55 else None
+
+
+def _clean_description(text: str, amount_text: str, category: str = "") -> str:
     """Remove common command words to make a readable description."""
+    if category == "Transport":
+        transport_description = _clean_transport_description(text, amount_text)
+        if transport_description:
+            return transport_description
     without_amount = re.sub(re.escape(amount_text), " ", text, flags=re.I) if amount_text else text
     without_amount = re.sub(
         r"\b(spent|paid|done|on|of|off|for|from|i|have|has|had|rs|pkr|rupees|received|got|income|expense|purchased|purchase|bought|today|yesterday|last|week|month|previous)\b",
@@ -179,7 +281,48 @@ def _clean_description(text: str, amount_text: str) -> str:
         flags=re.I,
     )
     without_amount = re.sub(r"[^\w &-]+", " ", without_amount)
-    return re.sub(r"\s+", " ", without_amount).strip().lower()
+    return _clean_spelling(re.sub(r"\s+", " ", without_amount).strip().lower())
+
+
+def _clean_transport_description(text: str, amount_text: str) -> str:
+    """Create readable transport descriptions like 'cab to texas fries'."""
+    without_amount = re.sub(re.escape(amount_text), " ", text, flags=re.I) if amount_text else text
+    lowered = without_amount.lower()
+    mode_match = re.search(r"\b(cab|taxi|uber|careem|rickshaw|bus|train|ride|fare)\b", lowered)
+    if not mode_match:
+        return ""
+    mode = mode_match.group(1)
+    destination_match = re.search(
+        r"\b(?:went|go|gone|travelled|traveled)\s+to\s+(.+?)\s+(?:on|by|via|in)\s+(?:a\s+)?(?:cab|taxi|uber|careem|rickshaw|bus|train|ride)\b",
+        lowered,
+    )
+    if destination_match:
+        destination = re.sub(r"\s+", " ", destination_match.group(1)).strip(" .,-")
+        destination = re.sub(r"^(the|a|an)\s+", "", destination)
+        destination = _clean_spelling(destination)
+        if destination:
+            return f"{mode} to {destination}"
+    return mode
+
+
+def _clean_spelling(text: str) -> str:
+    """Fix common speech/misspelling artifacts in generated descriptions."""
+    corrections = {
+        "osque": "mosque",
+        "mosqe": "mosque",
+        "mosq": "mosque",
+        "resturant": "restaurant",
+        "restraunt": "restaurant",
+        "restuarant": "restaurant",
+        "electrcity": "electricity",
+        "electricty": "electricity",
+        "groccery": "grocery",
+        "grossery": "grocery",
+        "trasport": "transport",
+        "texi": "taxi",
+    }
+    words = [corrections.get(word, word) for word in text.split()]
+    return re.sub(r"\s+", " ", " ".join(words)).strip()
 
 
 NUMBER_WORDS = {

@@ -8,7 +8,7 @@ from datetime import date, datetime
 from pathlib import Path
 
 from voicetrack.db import Database, DateRange, period_to_range
-from voicetrack.extractors import rule_based_extract
+from voicetrack.extractors import OllamaExtractor, rule_based_extract
 from voicetrack.pipeline import ExtractionError, TransactionPipeline
 
 
@@ -20,6 +20,22 @@ class FakeExtractor:
 
     def extract(self, text: str, now: datetime | None = None) -> dict:
         return dict(self.response)
+
+
+class BrokenOllamaExtractor(OllamaExtractor):
+    """Extractor that simulates all Ollama models failing."""
+
+    def _extract_with_model(self, model: str, text: str, now: datetime) -> dict:
+        raise RuntimeError(f"{model} timed out")
+
+
+class FakeSettings:
+    """Small settings object for OllamaExtractor tests."""
+
+    ollama_model = "llama3.2:3b"
+    ollama_fallback_model = "mistral:7b-instruct-q4_K_M"
+    ollama_host = "http://localhost:11434"
+    ollama_timeout_seconds = 20
 
 
 class PipelineTest(unittest.TestCase):
@@ -240,6 +256,51 @@ class PipelineTest(unittest.TestCase):
         extracted = rule_based_extract("from last week i purchased soap for 300", now=datetime(2026, 6, 27, 10, 0))
 
         self.assertEqual(extracted["date"], "2026-06-20")
+
+    def test_rule_based_fallback_links_cab_amount_to_transport(self):
+        extracted = rule_based_extract("i went to texas fries on cab for 500", now=datetime(2026, 6, 29, 9, 30))
+
+        self.assertEqual(extracted["type"], "expense")
+        self.assertEqual(extracted["amount"], 500)
+        self.assertEqual(extracted["category"], "Transport")
+        self.assertEqual(extracted["description"], "cab to texas fries")
+
+    def test_rule_based_fallback_extracts_multiple_transactions(self):
+        extracted = rule_based_extract("spent 500 on cab and paid 1200 for dinner", now=datetime(2026, 6, 29, 9, 30))
+
+        self.assertEqual(len(extracted["transactions"]), 2)
+        self.assertEqual(extracted["transactions"][0]["amount"], 500)
+        self.assertEqual(extracted["transactions"][0]["category"], "Transport")
+        self.assertEqual(extracted["transactions"][0]["description"], "cab")
+        self.assertEqual(extracted["transactions"][1]["amount"], 1200)
+        self.assertEqual(extracted["transactions"][1]["category"], "Food & Groceries")
+        self.assertEqual(extracted["transactions"][1]["description"], "dinner")
+
+    def test_ollama_timeout_can_return_multiple_transaction_fallback(self):
+        extractor = BrokenOllamaExtractor(FakeSettings())
+
+        extracted = extractor.extract("spent 500 on cab and paid 1200 for dinner", now=datetime(2026, 6, 29, 9, 30))
+
+        self.assertEqual(len(extracted["transactions"]), 2)
+        self.assertEqual(extracted["transactions"][0]["category"], "Transport")
+        self.assertEqual(extracted["transactions"][1]["category"], "Food & Groceries")
+
+    def test_rule_based_fallback_cleans_transport_description_spelling(self):
+        extracted = rule_based_extract("i went to the faisal osque on taxi for 400", now=datetime(2026, 6, 29, 10, 25))
+
+        self.assertEqual(extracted["category"], "Transport")
+        self.assertEqual(extracted["description"], "taxi to faisal mosque")
+
+    def test_pipeline_saves_multiple_preview_rows(self):
+        db = self.db()
+        pipeline = TransactionPipeline(db, BrokenOllamaExtractor(FakeSettings()))
+
+        preview = pipeline.preview("spent 500 on cab and paid 1200 for dinner", now=datetime(2026, 6, 29, 9, 30))
+        saved = pipeline.save_many(preview["transactions"])
+
+        self.assertEqual(len(saved), 2)
+        self.assertEqual(db.totals()["expense"], 1700)
+        self.assertEqual([row["category"] for row in db.list_transactions()], ["Food & Groceries", "Transport"])
 
 
 if __name__ == "__main__":

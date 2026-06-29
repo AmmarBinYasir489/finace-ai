@@ -1,213 +1,216 @@
-"""SQLite data access layer for VoiceTrack."""
-
-from __future__ import annotations
-
-import csv
 import sqlite3
-from contextlib import contextmanager
-from dataclasses import dataclass
-from datetime import date, datetime, timedelta
-from pathlib import Path
-from typing import Iterable
+import os
+from datetime import date, timedelta
 
-from .constants import CATEGORIES
+from voicetrack.config import DB_PATH
 
+CATEGORIES = [
+    "Food & Groceries", "Transport", "Utilities", "Health", "Education",
+    "Shopping", "Entertainment", "Rent", "Salary", "Freelance", "Other",
+]
 
-@dataclass(frozen=True)
-class DateRange:
-    """Inclusive date range used by SQL filters."""
-
-    start: str | None
-    end: str | None
+_db_path = DB_PATH
 
 
-def period_to_range(period: str, today: date | None = None) -> DateRange:
-    """Convert a dashboard period into an inclusive SQL date range."""
-    today = today or date.today()
-    if period == "today":
-        value = today.isoformat()
-        return DateRange(value, value)
-    if period == "week":
-        start = today - timedelta(days=today.weekday())
-        end = start + timedelta(days=6)
-        return DateRange(start.isoformat(), end.isoformat())
-    if period == "month":
-        start = today.replace(day=1)
-        if start.month == 12:
-            next_month = start.replace(year=start.year + 1, month=1)
-        else:
-            next_month = start.replace(month=start.month + 1)
-        end = next_month - timedelta(days=1)
-        return DateRange(start.isoformat(), end.isoformat())
-    return DateRange(None, None)
+def _connect(path=None):
+    p = path or _db_path
+    os.makedirs(os.path.dirname(p), exist_ok=True)
+    con = sqlite3.connect(p)
+    con.row_factory = sqlite3.Row
+    return con
 
 
-class Database:
-    """Small wrapper around sqlite3 so the rest of the app stays readable."""
-
-    def __init__(self, path: str | Path):
-        self.path = Path(path)
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.init_schema()
-
-    @contextmanager
-    def connect(self):
-        """Open a connection that returns rows as dictionaries."""
-        con = sqlite3.connect(self.path)
-        con.row_factory = sqlite3.Row
-        try:
-            yield con
+def init_db(path=None) -> None:
+    global _db_path
+    if path:
+        _db_path = path
+    con = _connect(path)
+    try:
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS transactions (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                type        TEXT NOT NULL CHECK(type IN ('expense','income')),
+                amount      REAL NOT NULL,
+                category    TEXT NOT NULL,
+                description TEXT,
+                date        TEXT NOT NULL,
+                time        TEXT,
+                confidence  TEXT CHECK(confidence IN ('high','low')),
+                created_at  TEXT DEFAULT (datetime('now','localtime'))
+            )
+        """)
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS categories (
+                id    INTEGER PRIMARY KEY AUTOINCREMENT,
+                name  TEXT UNIQUE NOT NULL
+            )
+        """)
+        con.executemany(
+            "INSERT OR IGNORE INTO categories(name) VALUES (?)",
+            [(c,) for c in CATEGORIES],
+        )
+        con.commit()
+        # migrate: add confidence column if missing
+        cols = [r[1] for r in con.execute("PRAGMA table_info(transactions)").fetchall()]
+        if "confidence" not in cols:
+            con.execute("ALTER TABLE transactions ADD COLUMN confidence TEXT")
             con.commit()
+    finally:
+        con.close()
+
+
+def _resolve_date(value: str) -> str:
+    today = date.today()
+    v = (value or "today").lower().strip()
+    if v == "today":
+        return today.isoformat()
+    if v == "yesterday":
+        return (today - timedelta(days=1)).isoformat()
+    if v in ("last week", "lastweek"):
+        return (today - timedelta(days=7)).isoformat()
+    if v in ("last month", "lastmonth"):
+        d = today.replace(day=1)
+        if d.month == 1:
+            d = d.replace(year=d.year - 1, month=12)
+        else:
+            d = d.replace(month=d.month - 1)
+        return d.isoformat()
+    return value
+
+
+def insert_transaction(tx: dict, path=None) -> int:
+    tx = dict(tx)
+    tx["date"] = _resolve_date(tx.get("date", "today"))
+    con = _connect(path)
+    try:
+        cur = con.execute(
+            """
+            INSERT INTO transactions(type, amount, category, description, date, time, confidence)
+            VALUES (:type, :amount, :category, :description, :date, :time, :confidence)
+            """,
+            {
+                "type": tx["type"],
+                "amount": float(tx["amount"]),
+                "category": tx.get("category", "Other"),
+                "description": tx.get("description", ""),
+                "date": tx["date"],
+                "time": tx.get("time"),
+                "confidence": tx.get("confidence"),
+            },
+        )
+        con.commit()
+        return cur.lastrowid
+    finally:
+        con.close()
+
+
+def get_transactions(
+    limit: int = 100,
+    offset: int = 0,
+    category: str = None,
+    tx_type: str = None,
+    date_from: str = None,
+    date_to: str = None,
+    path=None,
+) -> list:
+    clauses = []
+    params = []
+    if category:
+        clauses.append("category = ?")
+        params.append(category)
+    if tx_type:
+        clauses.append("type = ?")
+        params.append(tx_type)
+    if date_from:
+        clauses.append("date >= ?")
+        params.append(date_from)
+    if date_to:
+        clauses.append("date <= ?")
+        params.append(date_to)
+
+    sql = "SELECT * FROM transactions"
+    if clauses:
+        sql += " WHERE " + " AND ".join(clauses)
+    sql += " ORDER BY date DESC, id DESC LIMIT ? OFFSET ?"
+    params.extend([limit, offset])
+
+    con = _connect(path)
+    try:
+        return [dict(r) for r in con.execute(sql, params).fetchall()]
+    finally:
+        con.close()
+
+
+def delete_transaction(tx_id: int, path=None) -> None:
+    con = _connect(path)
+    try:
+        con.execute("DELETE FROM transactions WHERE id = ?", (tx_id,))
+        con.commit()
+    finally:
+        con.close()
+
+
+def get_summary(path=None) -> dict:
+    today = date.today()
+    month_start = today.replace(day=1).isoformat()
+    con = _connect(path)
+    try:
+        rows = con.execute("SELECT type, amount FROM transactions").fetchall()
+        total_income = sum(r["amount"] for r in rows if r["type"] == "income")
+        total_expense = sum(r["amount"] for r in rows if r["type"] == "expense")
+        month_rows = con.execute(
+            "SELECT amount FROM transactions WHERE type='expense' AND date >= ?",
+            (month_start,),
+        ).fetchall()
+        this_month_expense = sum(r["amount"] for r in month_rows)
+        return {
+            "total_income": total_income,
+            "total_expense": total_expense,
+            "balance": total_income - total_expense,
+            "this_month_expense": this_month_expense,
+        }
+    finally:
+        con.close()
+
+
+def get_category_totals(tx_type: str = "expense", path=None) -> list:
+    con = _connect(path)
+    try:
+        rows = con.execute(
+            """
+            SELECT category, SUM(amount) as total
+            FROM transactions
+            WHERE type = ?
+            GROUP BY category
+            ORDER BY total DESC
+            """,
+            (tx_type,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        con.close()
+
+
+def get_monthly_totals(months: int = 6, path=None) -> list:
+    today = date.today()
+    result = []
+    cursor = today.replace(day=1)
+    for _ in range(months):
+        month_str = cursor.strftime("%Y-%m")
+        con = _connect(path)
+        try:
+            rows = con.execute(
+                "SELECT type, amount FROM transactions WHERE date LIKE ?",
+                (f"{month_str}%",),
+            ).fetchall()
         finally:
             con.close()
-
-    def init_schema(self) -> None:
-        """Create tables and seed the default categories on first run."""
-        with self.connect() as con:
-            con.execute(
-                """
-                CREATE TABLE IF NOT EXISTS transactions (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    type TEXT NOT NULL,
-                    amount REAL NOT NULL,
-                    category TEXT NOT NULL,
-                    description TEXT,
-                    date TEXT NOT NULL,
-                    time TEXT,
-                    created_at TEXT DEFAULT (datetime('now'))
-                )
-                """
-            )
-            con.execute(
-                """
-                CREATE TABLE IF NOT EXISTS categories (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    name TEXT UNIQUE NOT NULL
-                )
-                """
-            )
-            con.executemany(
-                "INSERT OR IGNORE INTO categories(name) VALUES (?)",
-                [(name,) for name in CATEGORIES],
-            )
-
-    def add_transaction(self, item: dict) -> int:
-        """Insert one validated transaction and return its row id."""
-        created_at = item.get("created_at") or datetime.now().strftime("%Y-%m-%d %H:%M")
-        with self.connect() as con:
-            cur = con.execute(
-                """
-                INSERT INTO transactions(type, amount, category, description, date, time, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    item["type"],
-                    float(item["amount"]),
-                    item["category"],
-                    item.get("description", ""),
-                    item["date"],
-                    item.get("time"),
-                    created_at,
-                ),
-            )
-            return int(cur.lastrowid)
-
-    def delete_transaction(self, transaction_id: int) -> None:
-        """Delete a transaction by id."""
-        with self.connect() as con:
-            con.execute("DELETE FROM transactions WHERE id = ?", (transaction_id,))
-
-    def list_transactions(
-        self,
-        *,
-        date_range: DateRange | None = None,
-        search: str = "",
-        tx_type: str = "all",
-        category: str = "All",
-        limit: int | None = None,
-    ) -> list[dict]:
-        """Return transactions newest first using only SQL/Python filtering."""
-        clauses: list[str] = []
-        params: list[object] = []
-        if date_range and date_range.start:
-            clauses.append("date >= ?")
-            params.append(date_range.start)
-        if date_range and date_range.end:
-            clauses.append("date <= ?")
-            params.append(date_range.end)
-        if search:
-            clauses.append("(description LIKE ? OR category LIKE ?)")
-            needle = f"%{search}%"
-            params.extend([needle, needle])
-        if tx_type in {"income", "expense"}:
-            clauses.append("type = ?")
-            params.append(tx_type)
-        if category != "All":
-            clauses.append("category = ?")
-            params.append(category)
-
-        sql = "SELECT * FROM transactions"
-        if clauses:
-            sql += " WHERE " + " AND ".join(clauses)
-        sql += " ORDER BY date DESC, COALESCE(time, '') DESC, id DESC"
-        if limit:
-            sql += " LIMIT ?"
-            params.append(limit)
-
-        with self.connect() as con:
-            return [dict(row) for row in con.execute(sql, params).fetchall()]
-
-    def totals(self, date_range: DateRange | None = None) -> dict:
-        """Calculate income, expense, and net balance in Python."""
-        rows = self.list_transactions(date_range=date_range)
-        income = sum(float(row["amount"]) for row in rows if row["type"] == "income")
-        expense = sum(float(row["amount"]) for row in rows if row["type"] == "expense")
-        return {"income": income, "expense": expense, "net": income - expense}
-
-    def category_breakdown(self, date_range: DateRange | None = None) -> list[dict]:
-        """Group expenses by category for dashboard and report charts."""
-        rows = self.list_transactions(date_range=date_range, tx_type="expense")
-        totals: dict[str, float] = {}
-        for row in rows:
-            totals[row["category"]] = totals.get(row["category"], 0.0) + float(row["amount"])
-        return [
-            {"category": name, "amount": amount}
-            for name, amount in sorted(totals.items(), key=lambda item: item[1], reverse=True)
-        ]
-
-    def monthly_income_expense(self, months: int = 6, today: date | None = None) -> list[dict]:
-        """Return grouped monthly income and expense totals for reports."""
-        today = today or date.today()
-        month_starts: list[date] = []
-        cursor = today.replace(day=1)
-        for _ in range(months):
-            month_starts.append(cursor)
-            if cursor.month == 1:
-                cursor = cursor.replace(year=cursor.year - 1, month=12)
-            else:
-                cursor = cursor.replace(month=cursor.month - 1)
-        month_starts.reverse()
-
-        result: list[dict] = []
-        for start in month_starts:
-            if start.month == 12:
-                next_month = start.replace(year=start.year + 1, month=1)
-            else:
-                next_month = start.replace(month=start.month + 1)
-            end = next_month - timedelta(days=1)
-            totals = self.totals(DateRange(start.isoformat(), end.isoformat()))
-            result.append({"label": start.strftime("%b"), **totals})
-        return result
-
-    def export_csv(self, output_path: Path, rows: Iterable[dict] | None = None) -> Path:
-        """Write transactions to CSV for offline reports."""
-        rows = list(rows) if rows is not None else self.list_transactions()
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        with output_path.open("w", newline="", encoding="utf-8") as handle:
-            writer = csv.DictWriter(
-                handle,
-                fieldnames=["id", "type", "amount", "category", "description", "date", "time", "created_at"],
-            )
-            writer.writeheader()
-            writer.writerows(rows)
-        return output_path
+        income = sum(r["amount"] for r in rows if r["type"] == "income")
+        expense = sum(r["amount"] for r in rows if r["type"] == "expense")
+        result.append({"month": month_str, "income": income, "expense": expense})
+        if cursor.month == 1:
+            cursor = cursor.replace(year=cursor.year - 1, month=12)
+        else:
+            cursor = cursor.replace(month=cursor.month - 1)
+    result.reverse()
+    return result
