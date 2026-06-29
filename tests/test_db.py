@@ -1,7 +1,7 @@
-import os
-import tempfile
 import pytest
 from datetime import date, timedelta
+from pathlib import Path
+from uuid import uuid4
 
 import voicetrack.db as db_module
 from voicetrack.db import (
@@ -11,14 +11,23 @@ from voicetrack.db import (
 
 
 @pytest.fixture()
-def tmp_db(tmp_path):
-    path = str(tmp_path / "test.db")
+def tmp_db():
+    root = Path.cwd() / ".testdata"
+    root.mkdir(exist_ok=True)
+    path = str(root / f"test_{uuid4().hex}.db")
     init_db(path=path)
-    return path
+    yield path
+    db_file = Path(path)
+    if db_file.exists():
+        db_file.unlink()
 
 
 def test_init_creates_tables_and_seeds(tmp_db):
-    rows = db_module._connect(tmp_db).execute("SELECT name FROM categories ORDER BY name").fetchall()
+    con = db_module._connect(tmp_db)
+    try:
+        rows = con.execute("SELECT name FROM categories ORDER BY name").fetchall()
+    finally:
+        con.close()
     names = {r[0] for r in rows}
     for cat in CATEGORIES:
         assert cat in names

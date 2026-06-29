@@ -6,7 +6,7 @@ SQLite is a small database stored in a single file. VoiceTrack uses it for `tran
 
 ## Ollama
 
-Ollama runs language models on your computer. VoiceTrack sends your sentence to Ollama and asks for JSON only. The model extracts meaning, but it does not calculate totals.
+Ollama runs language models on your computer. VoiceTrack uses it in two stages: a fast local extractor model creates JSON, then an orchestrator prompt checks that JSON against the original sentence and fixes mistakes. The model extracts meaning, but it does not calculate totals.
 
 ## Voice Recognition
 
@@ -29,7 +29,7 @@ JSON is a structured text format. Ollama returns fields like `amount`, `category
 The app flow is:
 
 ```text
-voice or text -> Ollama JSON -> Python validation -> SQLite row -> Python totals -> CustomTkinter UI + matplotlib charts
+voice or text -> Qwen extractor JSON -> orchestrator validation -> SQLite row -> Python totals -> CustomTkinter UI + matplotlib charts
 ```
 
 The important boundary is simple: Ollama understands language, Python handles all arithmetic and storage.

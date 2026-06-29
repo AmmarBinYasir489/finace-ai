@@ -10,9 +10,9 @@ VoiceTrack is a fully offline desktop expense tracker. The user types or speaks 
 
 - The app must run offline on an i5 6th Gen laptop with 8GB RAM.
 - Large cloud models were not used because the requirement says no paid APIs and no cloud dependency.
-- `llama3.2:3b` is used first because it is smaller and faster on CPU.
-- `mistral:7b-instruct-q4_K_M` is available as a stronger fallback, but it is slower.
-- Q4 quantized models are used because they fit better in RAM than full precision models.
+- `qwen2.5:1.5b` is used first because it is fast enough for real-time local extraction on the target laptop.
+- A second LLM fallback is left blank by default because slower models caused long timeout chains in field testing.
+- If Qwen is unavailable, the app uses the local low-confidence fallback parser as a safety net.
 
 If asked why not other models:
 
@@ -29,19 +29,19 @@ spent 3000 on electricity bill today
 Flow:
 
 1. `ui.py` reads the text from the Add Entry screen.
-2. `pipeline.py` sends the text for extraction.
-3. `extractors.py` asks Ollama to return JSON.
-4. If Ollama is slow or unavailable, `extractors.py` uses a local fallback parser.
-5. `pipeline.py` validates amount, type, category, date, and time.
-6. The UI shows an editable preview.
-7. When the user clicks Confirm, `db.py` writes the transaction into SQLite.
+2. `extractor.py` sends the text to the first local LLM extractor.
+3. The first extractor returns JSON.
+4. `extractor.py` sends the original sentence plus that JSON to the orchestrator prompt.
+5. The orchestrator validates and corrects type, amount, category, description, date, time, and confidence.
+6. If Ollama is unavailable or times out, `fallback.py` is used only as a last-resort safety net.
+7. `db.py` writes the final transaction rows into SQLite.
 8. Dashboard and reports read from SQLite and recalculate totals using Python.
 
 ## What low-confidence fallback means
 
 Low confidence does not mean the app is broken.
 
-It means Ollama did not return quickly enough or did not return usable JSON, so the app used the local fallback parser. The fallback is safer than failing completely, but it asks the user to review before saving.
+It means the app could not complete the LLM extractor/orchestrator path in time, so it used the local fallback parser. The fallback is safer than failing completely, but it is not the main intelligence layer.
 
 ## Static and dynamic prompting
 
@@ -58,8 +58,8 @@ Dynamic prompt:
 Example:
 
 ```text
-Static: Extract JSON only.
-Dynamic: Current date is 2026-06-29. User input is "spent 500 on cab today".
+Static: Extract JSON only, then validate JSON against the original user text.
+Dynamic: Current date is 2026-06-29. Current time is 10:30. User input is "spent 500 on cab today".
 ```
 
 ## Why Python does the math
@@ -146,7 +146,7 @@ Expected extraction:
 }
 ```
 
-If Ollama works, it may be high confidence. If fallback is used, the app marks it low confidence and asks the user to review.
+If the Qwen extractor plus orchestrator path succeeds, this should be high confidence. If fallback is used, it is marked low confidence.
 
 ## What if the user enters multiple transactions in one prompt
 
@@ -156,21 +156,11 @@ Example:
 spent 500 on cab and paid 1200 for dinner
 ```
 
-Current safe behavior:
+Current behavior:
 
-> Multiple transactions detected. Please enter one transaction at a time.
-
-Reason:
-
-- The current database save flow saves one transaction per confirmation.
-- Splitting one sentence into many rows needs a separate multi-transaction review UI.
-- Guess-saving multiple rows would be risky for money data.
-
-Production improvement:
-
-- Add a multi-transaction preview table.
-- Show each detected transaction as a separate editable row.
-- User confirms all rows together.
+- The extractor/orchestrator returns a `transactions` list.
+- The UI saves each item as a separate SQLite row.
+- If the LLM fails, fallback can still split obvious multi-transaction sentences.
 
 ## File interaction map
 
@@ -179,33 +169,29 @@ main.py
   -> starts run_app()
 
 voicetrack/ui.py
-  -> screens, buttons, charts, preview form
+  -> screens, buttons, charts, input handling, save flow
 
-voicetrack/pipeline.py
-  -> validation and save workflow
+voicetrack/extractor.py
+  -> active Qwen/Ollama extractor + orchestrator pipeline
 
-voicetrack/extractors.py
-  -> Ollama JSON extraction and fallback parser
+voicetrack/prompts.py
+  -> extractor and orchestrator instructions
 
-voicetrack/dates.py
-  -> today, yesterday, last week, last month, weekdays
+voicetrack/fallback.py
+  -> last-resort parser when Ollama is not available
 
 voicetrack/db.py
   -> SQLite tables, inserts, reads, totals, filters, CSV export
 
-voicetrack/speech.py
+voicetrack/voice.py
   -> microphone audio and offline Vosk speech-to-text
 
 voicetrack/config.py
   -> .env settings
-
-voicetrack/constants.py
-  -> categories and UI theme colors
 ```
 
 ## Honest limitation statement
 
 Say this if challenged:
 
-> The current version is a single-transaction offline tracker. It is designed to be safe: if extraction is uncertain, it asks for review instead of silently saving. Multi-transaction extraction can be added, but it needs a separate preview table to avoid wrong financial records.
-
+> The current version uses a local two-stage LLM flow: extractor first, orchestrator second. Regex fallback exists only for offline safety when Ollama is unavailable or too slow.

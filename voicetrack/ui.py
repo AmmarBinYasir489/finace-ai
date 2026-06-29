@@ -159,6 +159,7 @@ class VoiceTrackApp(ctk.CTk):
         self.configure(fg_color=C("bg"))
 
         db.init_db()
+        extractor.warmup_async()   # load model into Ollama RAM immediately
 
         self._panels: dict[str, ctk.CTkFrame] = {}
         self._tx_offset    = 0

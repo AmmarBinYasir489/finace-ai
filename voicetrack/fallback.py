@@ -51,7 +51,11 @@ CATEGORY_KEYWORDS = [
     (["food", "grocery", "groceries", "lunch", "dinner", "breakfast", "meal",
       "restaurant", "pizza", "burger", "kfc", "mcdonalds", "chai", "tea",
       "coffee", "snack", "biryani", "karahi", "bbq", "banana", "fruit",
-      "vegetables", "meat"], "Food & Groceries"),
+      "vegetables", "meat", "ate", "eat", "eating", "eaten", "dine",
+      "dining", "dined", "had food", "had lunch", "had dinner",
+      "had breakfast", "ordered food", "got food", "bought food",
+      "paratha", "roti", "naan", "daal", "rice", "samosa", "nihari",
+      "halwa", "mithai", "sweets"], "Food & Groceries"),
     (["electricity", "gas", "water", "bill", "internet", "wifi", "utility",
       "utilities", "bijli", "sui gas"], "Utilities"),
     (["doctor", "medicine", "hospital", "pharmacy", "health", "clinic",
@@ -68,9 +72,9 @@ CATEGORY_KEYWORDS = [
 
 # Conjunction/separator patterns that often split multi-transaction sentences
 _SPLIT_PATTERNS = [
-    # "and paid/bought/spent/done..." — verb-led second clause
-    r'\s+and\s+(?=(?:paid|bought|spent|gave|sent|received|got|purchased|done|did)\s)',
-    r'\s*,\s*(?=(?:paid|bought|spent|gave|sent|received|got|purchased|done|did)\s)',
+    # "and paid/bought/spent/ate/done..." — verb-led second clause
+    r'\s+and\s+(?=(?:paid|bought|spent|gave|sent|received|got|purchased|done|did|ate|had|dined|watched|went)\s)',
+    r'\s*,\s*(?=(?:paid|bought|spent|gave|sent|received|got|purchased|done|did|ate|had|dined|watched|went)\s)',
     # "and <number>" — amount-led: "ticket 2000 and 500 for cab"
     r'\s+and\s+(?=\d)',
     # "and <1-4 words> <number>" — "shopping 3000 and cab fare 500"

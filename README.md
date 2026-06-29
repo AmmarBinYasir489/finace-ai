@@ -7,21 +7,21 @@ VoiceTrack is a fully offline desktop expense tracker. You can type or speak pla
 - Windows 10 or 11
 - Python 3.10 or newer.
 - Ollama installed
-- One local model, recommended:
+- One local model, recommended for the target laptop:
 
 ```powershell
-ollama pull mistral:7b-instruct-q4_K_M
+ollama pull qwen2.5:1.5b
 ```
 
-You can also use your `llama3.2:3b` model by changing `.env`.
+You can optionally set a second LLM fallback model, but the recommended default leaves it blank. If Qwen fails, VoiceTrack uses the local low-confidence fallback parser instead of waiting on another slow model.
 
 For slower laptops, this is the recommended `.env`:
 
 ```text
 OLLAMA_HOST=http://localhost:11434
-OLLAMA_MODEL=llama3.2:3b
-OLLAMA_FALLBACK_MODEL=mistral:7b-instruct-q4_K_M
-OLLAMA_TIMEOUT_SECONDS=20
+OLLAMA_MODEL=qwen2.5:1.5b
+OLLAMA_FALLBACK_MODEL=
+OLLAMA_TIMEOUT_SECONDS=45
 ```
 
 ## Setup
@@ -78,13 +78,13 @@ Set `VOICETRACK_DB_PATH` in `.env` if you want a different path.
 ## How It Works
 
 1. You type or speak a transaction.
-2. Ollama returns JSON with type, amount, category, description, date, time, and confidence.
-3. VoiceTrack shows an editable preview.
-4. You confirm the preview.
-5. Python writes the row to SQLite.
+2. `voicetrack/extractor.py` sends the sentence to the first local Ollama/Qwen extractor.
+3. The extractor returns JSON.
+4. The orchestrator prompt receives the original sentence plus that JSON and corrects mistakes.
+5. Python writes the final transaction rows to SQLite.
 6. Python recalculates totals and redraws the dashboard.
 
-If Ollama is still loading or times out, VoiceTrack uses a low-confidence local fallback for simple entries and asks you to review the fields before saving.
+If Ollama is still loading or times out, VoiceTrack uses `fallback.py` as a low-confidence local safety net. The fallback is not the main intelligence layer.
 
 ## UI
 
