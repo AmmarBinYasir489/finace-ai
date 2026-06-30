@@ -17,6 +17,10 @@ def _connect(path=None):
     os.makedirs(os.path.dirname(p), exist_ok=True)
     con = sqlite3.connect(p)
     con.row_factory = sqlite3.Row
+    # Enforce declared foreign keys (off by default in SQLite) and use WAL so a
+    # crash mid-write cannot leave a torn database file.
+    con.execute("PRAGMA foreign_keys = ON")
+    con.execute("PRAGMA journal_mode = WAL")
     return con
 
 
@@ -100,6 +104,32 @@ def init_db(path=None) -> None:
                 name  TEXT UNIQUE NOT NULL
             )
         """)
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS event_trace (
+                request_id          TEXT PRIMARY KEY,
+                raw_input           TEXT NOT NULL,
+                normalized_input    TEXT,
+                route               TEXT,
+                parser_output       TEXT,
+                auditor_output      TEXT,
+                final_event         TEXT,
+                transaction_ids     TEXT,
+                confidence          REAL,
+                model               TEXT,
+                prompt_version      TEXT,
+                latency_ms          INTEGER,
+                fallback_used       INTEGER DEFAULT 0,
+                needs_clarification INTEGER DEFAULT 0,
+                errors              TEXT,
+                created_at          TEXT DEFAULT (datetime('now','localtime'))
+            )
+        """)
+        # Indexes for the analytics queries that currently full-scan transactions.
+        con.execute("CREATE INDEX IF NOT EXISTS idx_tx_date ON transactions(date)")
+        con.execute("CREATE INDEX IF NOT EXISTS idx_tx_kind ON transactions(kind)")
+        con.execute("CREATE INDEX IF NOT EXISTS idx_tx_loan ON transactions(loan_account_id)")
+        con.execute("CREATE INDEX IF NOT EXISTS idx_loantx_acct ON loan_transactions(loan_account_id)")
+        con.execute("CREATE INDEX IF NOT EXISTS idx_part_group ON shared_expense_participants(group_id)")
         con.executemany(
             "INSERT OR IGNORE INTO categories(name) VALUES (?)",
             [(c,) for c in CATEGORIES],
@@ -142,43 +172,52 @@ def _resolve_date(value: str) -> str:
     return value
 
 
-def insert_transaction(tx: dict, path=None) -> int:
+def _insert_tx(con, tx: dict) -> int:
+    """Insert one transaction row on an existing connection (no commit)."""
     tx = dict(tx)
     tx["date"] = _resolve_date(tx.get("date", "today"))
     amount = float(tx["amount"])
     cash_flow = tx.get("cash_flow")
     if cash_flow is None:
         cash_flow = amount if tx["type"] == "income" else -amount
+    cur = con.execute(
+        """
+        INSERT INTO transactions(
+            type, amount, category, description, date, time, confidence,
+            kind, person, loan_account_id, shared_group_id, cash_flow
+        )
+        VALUES (
+            :type, :amount, :category, :description, :date, :time, :confidence,
+            :kind, :person, :loan_account_id, :shared_group_id, :cash_flow
+        )
+        """,
+        {
+            "type": tx["type"],
+            "amount": amount,
+            "category": tx.get("category", "Other"),
+            "description": tx.get("description", ""),
+            "date": tx["date"],
+            "time": tx.get("time"),
+            "confidence": tx.get("confidence"),
+            "kind": tx.get("kind", "standard"),
+            "person": tx.get("person"),
+            "loan_account_id": tx.get("loan_account_id"),
+            "shared_group_id": tx.get("shared_group_id"),
+            "cash_flow": cash_flow,
+        },
+    )
+    return cur.lastrowid
+
+
+def insert_transaction(tx: dict, path=None) -> int:
     con = _connect(path)
     try:
-        cur = con.execute(
-            """
-            INSERT INTO transactions(
-                type, amount, category, description, date, time, confidence,
-                kind, person, loan_account_id, shared_group_id, cash_flow
-            )
-            VALUES (
-                :type, :amount, :category, :description, :date, :time, :confidence,
-                :kind, :person, :loan_account_id, :shared_group_id, :cash_flow
-            )
-            """,
-            {
-                "type": tx["type"],
-                "amount": amount,
-                "category": tx.get("category", "Other"),
-                "description": tx.get("description", ""),
-                "date": tx["date"],
-                "time": tx.get("time"),
-                "confidence": tx.get("confidence"),
-                "kind": tx.get("kind", "standard"),
-                "person": tx.get("person"),
-                "loan_account_id": tx.get("loan_account_id"),
-                "shared_group_id": tx.get("shared_group_id"),
-                "cash_flow": cash_flow,
-            },
-        )
+        tx_id = _insert_tx(con, tx)
         con.commit()
-        return cur.lastrowid
+        return tx_id
+    except Exception:
+        con.rollback()
+        raise
     finally:
         con.close()
 
@@ -247,6 +286,85 @@ def _get_or_create_loan_account(con, person: str, loan_type: str, activity_date:
     return cur.lastrowid
 
 
+_LOAN_DEFINITIONS = {
+    # action: (default_loan_type, tx_type, category, cash_flow_sign, signed_delta_sign)
+    "loan_given": ("owed_to_me", "expense", "Loan Given", -1, +1),
+    "loan_taken": ("i_owe", "income", "Loan Taken", +1, -1),
+    "loan_repayment_received": ("owed_to_me", "income", "Loan Repayment", +1, -1),
+    "loan_repayment_made": ("i_owe", "expense", "Loan Repayment", -1, +1),
+    "shared_payable": ("i_owe", "expense", "Shared Payable", 0, -1),
+}
+
+
+def _record_loan_movement(con, action: str, person: str, amount: float,
+                          date_value: str = "today", notes: str = "",
+                          confidence: str = "high") -> dict:
+    """Record a loan movement + its linked transaction on one connection (no commit)."""
+    action = action.strip().lower()
+    amount = round(float(amount), 2)
+    tx_date = _resolve_date(date_value)
+    if action not in _LOAN_DEFINITIONS:
+        raise ValueError(f"Unsupported loan action: {action}")
+    default_loan_type, tx_type, category, cf_sign, delta_sign = _LOAN_DEFINITIONS[action]
+    cash_flow = cf_sign * amount
+    signed_delta = delta_sign * amount
+
+    account_id = _get_or_create_loan_account(con, person, default_loan_type, tx_date, notes)
+    account = con.execute(
+        "SELECT current_balance, loan_type FROM loan_accounts WHERE id = ?",
+        (account_id,),
+    ).fetchone()
+    signed_balance = float(account["current_balance"])
+    if account["loan_type"] == "i_owe":
+        signed_balance *= -1
+    signed_balance = round(signed_balance + signed_delta, 2)
+    new_balance = abs(signed_balance)
+    if signed_balance > 0:
+        loan_type = "owed_to_me"
+    elif signed_balance < 0:
+        loan_type = "i_owe"
+    else:
+        loan_type = account["loan_type"]
+    status = "Paid" if new_balance == 0 else "Active"
+
+    description_map = {
+        "loan_given": f"Loan Given -> {person.title()}",
+        "loan_taken": f"Loan Taken -> {person.title()}",
+        "loan_repayment_received": f"Loan Repayment Received -> {person.title()}",
+        "loan_repayment_made": f"Loan Repayment Made -> {person.title()}",
+        "shared_payable": f"Shared Payable -> {person.title()}",
+    }
+    tx_id = _insert_tx(con, {
+        "type": tx_type,
+        "amount": amount,
+        "category": category,
+        "description": description_map[action],
+        "date": tx_date,
+        "time": None,
+        "confidence": confidence,
+        "kind": action,
+        "person": person.title(),
+        "loan_account_id": account_id,
+        "cash_flow": cash_flow,
+    })
+    con.execute(
+        """
+        UPDATE loan_accounts
+        SET current_balance = ?, status = ?, last_activity = ?, loan_type = ?
+        WHERE id = ?
+        """,
+        (new_balance, status, tx_date, loan_type, account_id),
+    )
+    con.execute(
+        """
+        INSERT INTO loan_transactions(loan_account_id, transaction_id, action, amount, balance_after, date, notes)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (account_id, tx_id, action, amount, new_balance, tx_date, notes),
+    )
+    return _get_tx(con, tx_id)
+
+
 def record_loan_movement(
     action: str,
     person: str,
@@ -256,92 +374,85 @@ def record_loan_movement(
     confidence: str = "high",
     path=None,
 ) -> dict:
-    """Record a loan movement and its linked normal transaction."""
-    action = action.strip().lower()
-    amount = round(float(amount), 2)
-    tx_date = _resolve_date(date_value)
-    definitions = {
-        "loan_given": ("owed_to_me", "expense", "Loan Given", -amount, amount),
-        "loan_taken": ("i_owe", "income", "Loan Taken", amount, -amount),
-        "loan_repayment_received": ("owed_to_me", "income", "Loan Repayment", amount, -amount),
-        "loan_repayment_made": ("i_owe", "expense", "Loan Repayment", -amount, amount),
-        "shared_payable": ("i_owe", "expense", "Shared Payable", 0, -amount),
-    }
-    if action not in definitions:
-        raise ValueError(f"Unsupported loan action: {action}")
-    default_loan_type, tx_type, category, cash_flow, signed_delta = definitions[action]
-
+    """Record a loan movement and its linked transaction atomically."""
     con = _connect(path)
     try:
-        account_id = _get_or_create_loan_account(con, person, default_loan_type, tx_date, notes)
+        result = _record_loan_movement(con, action, person, amount, date_value, notes, confidence)
         con.commit()
-        account = con.execute(
-            "SELECT current_balance, loan_type FROM loan_accounts WHERE id = ?",
-            (account_id,),
-        ).fetchone()
-        signed_balance = float(account["current_balance"])
-        if account["loan_type"] == "i_owe":
-            signed_balance *= -1
-        signed_balance = round(signed_balance + signed_delta, 2)
-        new_balance = abs(signed_balance)
-        if signed_balance > 0:
-            loan_type = "owed_to_me"
-        elif signed_balance < 0:
-            loan_type = "i_owe"
-        else:
-            loan_type = account["loan_type"]
-        status = "Paid" if new_balance == 0 else "Active"
-
-        description_map = {
-            "loan_given": f"Loan Given -> {person.title()}",
-            "loan_taken": f"Loan Taken -> {person.title()}",
-            "loan_repayment_received": f"Loan Repayment Received -> {person.title()}",
-            "loan_repayment_made": f"Loan Repayment Made -> {person.title()}",
-            "shared_payable": f"Shared Payable -> {person.title()}",
-        }
-        tx_id = insert_transaction(
-            {
-                "type": tx_type,
-                "amount": amount,
-                "category": category,
-                "description": description_map[action],
-                "date": tx_date,
-                "time": None,
-                "confidence": confidence,
-                "kind": action,
-                "person": person.title(),
-                "loan_account_id": account_id,
-                "cash_flow": cash_flow,
-            },
-            path=path,
-        )
-
-        con.execute(
-            """
-            UPDATE loan_accounts
-            SET current_balance = ?, status = ?, last_activity = ?, loan_type = ?
-            WHERE id = ?
-            """,
-            (new_balance, status, tx_date, loan_type, account_id),
-        )
-        con.execute(
-            """
-            INSERT INTO loan_transactions(loan_account_id, transaction_id, action, amount, balance_after, date, notes)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            """,
-            (account_id, tx_id, action, amount, new_balance, tx_date, notes),
-        )
-        con.commit()
-        return get_transaction(tx_id, path=path)
+        return result
+    except Exception:
+        con.rollback()
+        raise
     finally:
         con.close()
+
+
+def _get_tx(con, tx_id: int) -> dict:
+    row = con.execute("SELECT * FROM transactions WHERE id = ?", (tx_id,)).fetchone()
+    return dict(row) if row else {}
 
 
 def get_transaction(tx_id: int, path=None) -> dict:
     con = _connect(path)
     try:
-        row = con.execute("SELECT * FROM transactions WHERE id = ?", (tx_id,)).fetchone()
-        return dict(row) if row else {}
+        return _get_tx(con, tx_id)
+    finally:
+        con.close()
+
+
+_TRACE_FIELDS = (
+    "request_id", "raw_input", "normalized_input", "route", "parser_output",
+    "auditor_output", "final_event", "transaction_ids", "confidence", "model",
+    "prompt_version", "latency_ms", "fallback_used", "needs_clarification", "errors",
+)
+
+
+def record_trace(trace: dict, path=None) -> None:
+    """Append (or replace by request_id) one EventTrace row.
+
+    Tracing must never break the main flow, so failures here are swallowed after
+    a best-effort write — the financial write already succeeded by this point.
+    """
+    if not trace or not trace.get("request_id"):
+        return
+    row = {k: trace.get(k) for k in _TRACE_FIELDS}
+    for flag in ("fallback_used", "needs_clarification"):
+        row[flag] = int(bool(row.get(flag)))
+    con = _connect(path)
+    try:
+        con.execute(
+            f"INSERT OR REPLACE INTO event_trace({', '.join(_TRACE_FIELDS)}) "
+            f"VALUES ({', '.join(':' + f for f in _TRACE_FIELDS)})",
+            row,
+        )
+        con.commit()
+    except Exception:
+        con.rollback()
+    finally:
+        con.close()
+
+
+def get_traces(limit: int = 100, path=None) -> list[dict]:
+    con = _connect(path)
+    try:
+        rows = con.execute(
+            "SELECT * FROM event_trace ORDER BY created_at DESC, rowid DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        con.close()
+
+
+def get_loan_account_by_name(person: str, path=None) -> dict | None:
+    """Return a person's loan account (case-insensitive), or None."""
+    con = _connect(path)
+    try:
+        row = con.execute(
+            "SELECT * FROM loan_accounts WHERE person_name = ? COLLATE NOCASE",
+            (person.strip().title(),),
+        ).fetchone()
+        return dict(row) if row else None
     finally:
         con.close()
 
@@ -402,122 +513,111 @@ def get_shared_expense_participants(group_id: int | None = None, path=None) -> l
         con.close()
 
 
-def record_shared_expense(plan: dict, path=None) -> list[dict]:
-    """Record personal shares as expenses and other shares as receivable loans."""
+def _record_shared_expense(con, plan: dict) -> list[dict]:
+    """Record a shared expense on one connection (no commit). All-or-nothing."""
     tx_date = _resolve_date(plan.get("date", "today"))
     components = plan.get("components", [])
     people = plan.get("people", [])
     payer = (plan.get("payer") or "me").strip().title()
     payer_is_me = payer.lower() == "me"
     description = plan.get("description", "Shared expense")
+    confidence = plan.get("confidence", "high")
     total_paid = round(float(plan.get("total_paid", 0)), 2)
     my_share = round(sum(float(c.get("my_share", 0)) for c in components), 2)
     others_share = round(total_paid - my_share, 2) if payer_is_me else 0
 
-    con = _connect(path)
-    try:
-        cur = con.execute(
-            """
-            INSERT INTO shared_expense_groups(description, total_paid, my_share, others_share, date)
-            VALUES (?, ?, ?, ?, ?)
-            """,
-            (description, total_paid, my_share, others_share, tx_date),
-        )
-        group_id = cur.lastrowid
-        con.commit()
-    finally:
-        con.close()
+    cur = con.execute(
+        """
+        INSERT INTO shared_expense_groups(description, total_paid, my_share, others_share, date)
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        (description, total_paid, my_share, others_share, tx_date),
+    )
+    group_id = cur.lastrowid
 
     inserted: list[dict] = []
     for component in components:
-        if float(component.get("my_share", 0)) > 0:
-            tx_id = insert_transaction(
-                {
-                    "type": "expense",
-                    "amount": round(float(component["my_share"]), 2),
-                    "category": component.get("category", "Other"),
-                    "description": component.get("description", description),
-                    "date": tx_date,
-                    "time": None,
-                    "confidence": plan.get("confidence", "high"),
-                    "kind": "shared_expense",
-                    "shared_group_id": group_id,
-                    "cash_flow": -round(float(component["my_share"]), 2) if payer_is_me else 0,
-                },
-                path=path,
-            )
-            inserted.append(get_transaction(tx_id, path=path))
+        share = round(float(component.get("my_share", 0)), 2)
+        if share > 0:
+            tx_id = _insert_tx(con, {
+                "type": "expense",
+                "amount": share,
+                "category": component.get("category", "Other"),
+                "description": component.get("description", description),
+                "date": tx_date,
+                "time": None,
+                "confidence": confidence,
+                "kind": "shared_expense",
+                "shared_group_id": group_id,
+                "cash_flow": -share if payer_is_me else 0,
+            })
+            inserted.append(_get_tx(con, tx_id))
 
     if not payer_is_me:
-        loan_tx = record_loan_movement(
-            "shared_payable",
-            payer,
-            my_share,
-            date_value=tx_date,
-            notes=f"Shared expense paid by {payer}: {description}",
-            confidence=plan.get("confidence", "high"),
-            path=path,
+        loan_tx = _record_loan_movement(
+            con, "shared_payable", payer, my_share, date_value=tx_date,
+            notes=f"Shared expense paid by {payer}: {description}", confidence=confidence,
         )
         inserted.append(loan_tx)
-        con = _connect(path)
-        try:
-            con.execute(
-                """
-                INSERT INTO shared_expense_participants(group_id, person_name, share_amount, status, loan_account_id)
-                VALUES (?, ?, ?, ?, ?)
-                """,
-                (group_id, payer, my_share, "I owe", loan_tx.get("loan_account_id")),
-            )
-            con.commit()
-        finally:
-            con.close()
+        con.execute(
+            """
+            INSERT INTO shared_expense_participants(group_id, person_name, share_amount, status, loan_account_id)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (group_id, payer, my_share, "I owe", loan_tx.get("loan_account_id")),
+        )
         return inserted
 
     for person in people:
         share = round(float(person.get("share", 0)), 2)
         if share <= 0:
             continue
-        loan_tx = record_loan_movement(
-            "loan_given",
-            person["name"],
-            share,
-            date_value=tx_date,
-            notes=f"Shared expense: {description}",
-            confidence=plan.get("confidence", "high"),
-            path=path,
+        loan_tx = _record_loan_movement(
+            con, "loan_given", person["name"], share, date_value=tx_date,
+            notes=f"Shared expense: {description}", confidence=confidence,
         )
         inserted.append(loan_tx)
-        account_id = loan_tx.get("loan_account_id")
-        con = _connect(path)
-        try:
-            con.execute(
-                """
-                INSERT INTO shared_expense_participants(group_id, person_name, share_amount, status, loan_account_id)
-                VALUES (?, ?, ?, ?, ?)
-                """,
-                (group_id, person["name"].title(), share, "Paid" if person.get("paid_back") else "Open", account_id),
-            )
-            con.commit()
-        finally:
-            con.close()
-
+        con.execute(
+            """
+            INSERT INTO shared_expense_participants(group_id, person_name, share_amount, status, loan_account_id)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (group_id, person["name"].title(), share,
+             "Paid" if person.get("paid_back") else "Open", loan_tx.get("loan_account_id")),
+        )
         if person.get("paid_back"):
-            repay_tx = record_loan_movement(
-                "loan_repayment_received",
-                person["name"],
-                share,
-                date_value=tx_date,
-                notes=f"Immediate shared expense repayment: {description}",
-                confidence=plan.get("confidence", "high"),
-                path=path,
-            )
-            inserted.append(repay_tx)
+            inserted.append(_record_loan_movement(
+                con, "loan_repayment_received", person["name"], share, date_value=tx_date,
+                notes=f"Immediate shared expense repayment: {description}", confidence=confidence,
+            ))
 
     return inserted
 
 
+def record_shared_expense(plan: dict, path=None) -> list[dict]:
+    """Record personal shares as expenses and other shares as loans, atomically."""
+    con = _connect(path)
+    try:
+        result = _record_shared_expense(con, plan)
+        con.commit()
+        return result
+    except Exception:
+        con.rollback()
+        raise
+    finally:
+        con.close()
+
+
 def apply_finance_plan(plan: dict, path=None) -> list[dict]:
-    """Apply a parsed loan/shared-expense plan and return inserted transactions."""
+    """Apply a parsed loan/shared-expense plan and return inserted transactions.
+
+    Every plan passes through the Auditor first, which corrects repayment
+    direction from the ledger and raises ClarificationNeeded when the correct
+    interpretation cannot be determined.
+    """
+    from voicetrack import auditor
+
+    plan = auditor.audit_finance_plan(plan, path=path)
     intent = plan.get("intent")
     if intent == "loan_clear":
         person = plan["person"].strip().title()

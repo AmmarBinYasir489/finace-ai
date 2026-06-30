@@ -83,6 +83,77 @@ def test_shared_percent_variants_detected(text):
     assert plan["people"], "a participant should be detected"
 
 
+# --- Auditor: direction correction & clarification --------------------------
+
+def test_auditor_corrects_repayment_direction(tmp_db):
+    # I owe Ahmed; the parser wrongly says "repayment_received". Auditor must flip
+    # it to "made" from the ledger, so my payable goes DOWN, not flips to a receivable.
+    _apply("I borrowed 10000 from Ahmed.", tmp_db)
+    db.apply_finance_plan(
+        {"intent": "loan_repayment_received", "person": "Ahmed", "amount": 3000},
+        path=tmp_db,
+    )
+    ahmed = next(a for a in db.get_loan_accounts(path=tmp_db) if a["person_name"] == "Ahmed")
+    assert ahmed["loan_type"] == "i_owe"
+    assert ahmed["current_balance"] == 7000   # reduced, not flipped to owed_to_me
+
+
+def test_auditor_blocks_repayment_without_loan(tmp_db):
+    from voicetrack.auditor import ClarificationNeeded
+    with pytest.raises(ClarificationNeeded):
+        db.apply_finance_plan(
+            {"intent": "loan_repayment_made", "person": "Stranger", "amount": 500},
+            path=tmp_db,
+        )
+    # Nothing was written.
+    assert db.get_loan_accounts(path=tmp_db) == []
+
+
+def test_auditor_blocks_overpayment(tmp_db):
+    from voicetrack.auditor import ClarificationNeeded
+    _apply("I lent Sara 1000.", tmp_db)
+    with pytest.raises(ClarificationNeeded):
+        db.apply_finance_plan(
+            {"intent": "loan_repayment_received", "person": "Sara", "amount": 5000},
+            path=tmp_db,
+        )
+
+
+# --- Atomicity & DB safety --------------------------------------------------
+
+def test_connection_enforces_foreign_keys_and_wal(tmp_db):
+    con = db._connect(tmp_db)
+    try:
+        assert con.execute("PRAGMA foreign_keys").fetchone()[0] == 1
+        assert con.execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal"
+    finally:
+        con.close()
+
+
+def test_shared_expense_rolls_back_on_failure(tmp_db, monkeypatch):
+    # Force a failure midway through recording a shared expense and assert NOTHING
+    # was persisted (no orphaned group, transactions, or loan accounts).
+    plan = parse_special_intent("split dinner 3000 with Ali and Sara")
+    assert plan is not None
+
+    real = db._record_loan_movement
+    calls = {"n": 0}
+
+    def boom(con, *a, **kw):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("simulated crash mid-write")
+        return real(con, *a, **kw)
+
+    monkeypatch.setattr(db, "_record_loan_movement", boom)
+    with pytest.raises(RuntimeError):
+        db.record_shared_expense(plan, path=tmp_db)
+
+    assert db.get_shared_expense_groups(path=tmp_db) == []
+    assert db.get_loan_accounts(path=tmp_db) == []
+    assert db.get_transactions(limit=100, path=tmp_db) == []
+
+
 # --- LLM spec -> plan resolver (no model needed) ----------------------------
 
 def test_build_plan_loan_from_spec():

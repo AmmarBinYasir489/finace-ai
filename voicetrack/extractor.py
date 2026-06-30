@@ -13,7 +13,9 @@ import json
 import re
 import socket
 import threading
+import time
 import urllib.parse
+import uuid
 from datetime import datetime, timedelta
 
 import requests
@@ -23,6 +25,7 @@ from voicetrack.prompts import (
     EXTRACTOR_SYSTEM_PROMPT,
     FINANCE_INTENT_SYSTEM_PROMPT,
     ORCHESTRATOR_SYSTEM_PROMPT,
+    PROMPT_VERSION,
 )
 
 
@@ -371,6 +374,7 @@ def _item_for_amount(user_input: str, amount: float) -> str | None:
 _GIFT_INCOME_WORDS = (
     "gift", "gifted", "present", "eidi", "eidy", "refund", "refunded",
     "cashback", "cash back", "reimburse", "reimbursed", "reimbursement",
+    "gave me", "sent me",
 )
 _SALARY_WORDS = ("salary", "paycheck", "pay check", "wages", "monthly pay")
 _FREELANCE_WORDS = (
@@ -590,24 +594,65 @@ def _llm_special_intent(user_input: str) -> dict | None:
     return None
 
 
-def extract(user_input: str) -> dict:
-    """Extract one or more transactions from natural language."""
+def _confidence_score(result: dict) -> float | None:
+    """Map the parser's high/low label to a numeric confidence for the trace."""
+    conf = result.get("confidence")
+    if isinstance(conf, (int, float)):
+        return float(conf)
+    if conf == "high":
+        return 0.9
+    if conf == "low":
+        return 0.5
+    rows = result.get("transactions")
+    if isinstance(rows, list) and rows:
+        vals = [0.9 if r.get("confidence") == "high" else 0.5
+                for r in rows if isinstance(r, dict)]
+        if vals:
+            return round(sum(vals) / len(vals), 2)
+    return None
+
+
+def extract(user_input: str, trace: dict | None = None) -> dict:
+    """Extract one or more transactions from natural language.
+
+    If `trace` (a dict) is supplied, it is populated with EventTrace metadata
+    (request_id, route, model, latency, confidence, fallback_used, …) so the
+    caller can persist an audit record. The return value is unchanged.
+    """
     from voicetrack import fallback
     from voicetrack.finance_intents import parse_special_intent
+
+    started = time.monotonic()
+    t = trace if trace is not None else {}
+    t.setdefault("request_id", uuid.uuid4().hex)
+    t["raw_input"] = user_input
+    t["prompt_version"] = PROMPT_VERSION
+    t.setdefault("errors", [])
+
+    def _finish(result: dict, route: str, *, model=None, fallback_used=False) -> dict:
+        t["normalized_input"] = user_input
+        t["route"] = route
+        t["model"] = model
+        t["fallback_used"] = fallback_used
+        t["confidence"] = _confidence_score(result)
+        t["needs_clarification"] = "error" in result
+        t["final_event"] = json.dumps(result, ensure_ascii=False, default=str)
+        t["latency_ms"] = int((time.monotonic() - started) * 1000)
+        return result
 
     user_input = _expand_shorthand_amounts(user_input)
 
     # 1. Fast deterministic loan/shared parser (works fully offline).
     special = parse_special_intent(user_input)
     if special:
-        return special
+        return _finish(special, special.get("intent", "special"))
 
     # 2. Natural-language loan/shared parser via the local model, for phrasings the
     #    regex parser misses. Python still computes all split/loan math.
     if _ollama_reachable() and _looks_like_finance_intent(user_input):
         llm_plan = _llm_special_intent(user_input)
         if llm_plan:
-            return llm_plan
+            return _finish(llm_plan, llm_plan.get("intent", "special"), model=OLLAMA_MODEL)
 
     if _ollama_reachable():
         last_extractor_result: dict | None = None
@@ -616,23 +661,25 @@ def extract(user_input: str) -> dict:
             if raw is None:
                 continue
             if "error" in raw:
-                return raw
+                return _finish(raw, "error", model=model)
 
             if _safe_payload(raw, user_input):
                 last_extractor_result = raw
             validated = _call_deadline(model, ORCHESTRATOR_SYSTEM_PROMPT, _orchestrator_context(user_input, raw))
             if validated is not None and _safe_payload(validated, user_input):
-                return _complete_payload(validated, "high", user_input)
+                return _finish(_complete_payload(validated, "high", user_input), "transaction", model=model)
 
         if last_extractor_result is not None:
             _mark_confidence(last_extractor_result, "low")
-            return _complete_payload(last_extractor_result, "low", user_input)
+            return _finish(_complete_payload(last_extractor_result, "low", user_input),
+                           "transaction", model=OLLAMA_MODEL)
 
     result = fallback.parse(user_input)
     _mark_confidence(result, "low")
     if not _safe_payload(result, user_input):
-        return {"error": "Could not understand input. Please rephrase."}
-    return result
+        return _finish({"error": "Could not understand input. Please rephrase."},
+                       "error", fallback_used=True)
+    return _finish(result, "transaction", fallback_used=True)
 
 
 def normalize_transactions(result: dict) -> list[dict]:

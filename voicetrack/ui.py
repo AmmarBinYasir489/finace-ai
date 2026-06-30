@@ -183,7 +183,7 @@ class VoiceTrackApp(ctk.CTk):
 
     def _build_sidebar(self):
         global _sb_frame
-        self._sb = ctk.CTkFrame(self, width=52, corner_radius=0,
+        self._sb = ctk.CTkFrame(self, width=224, corner_radius=0,
                                  fg_color=C("sidebar"))
         self._sb.pack(side="left", fill="y")
         self._sb.pack_propagate(False)
@@ -194,74 +194,71 @@ class VoiceTrackApp(ctk.CTk):
 
         # Logo
         logo_wrap = ctk.CTkFrame(self._sb, fg_color="transparent")
-        logo_wrap.pack(fill="x", padx=7, pady=(18, 18))
+        logo_wrap.pack(fill="x", padx=18, pady=(20, 16))
 
         logo_ic = ctk.CTkFrame(logo_wrap, fg_color=C("accent_dim"),
-                               corner_radius=12, width=38, height=38)
+                               corner_radius=12, width=44, height=44)
         logo_ic.pack(side="left")
         logo_ic.pack_propagate(False)
-        _lbl(logo_ic, "🎙", size=18).pack(expand=True)
+        _lbl(logo_ic, "🎙", size=22).pack(expand=True)
 
         name_col = ctk.CTkFrame(logo_wrap, fg_color="transparent")
-        name_col.pack_forget()
-        _lbl(name_col, "VoiceTrack", size=15, weight="bold",
+        name_col.pack(side="left", padx=(12, 0))
+        _lbl(name_col, "VoiceTrack", size=16, weight="bold",
              color=C("text")).pack(anchor="w")
-        _lbl(name_col, "Finance Tracker", size=10,
+        _lbl(name_col, "Finance Tracker", size=11,
              color=C("text3")).pack(anchor="w")
 
         _divider(self._sb)
 
-        # Nav items
+        _lbl(self._sb, "MENU", size=10, weight="bold",
+             color=C("text3")).pack(anchor="w", padx=22, pady=(14, 4))
+
+        # Nav items (icon + label)
         self._nav_btns: dict[str, ctk.CTkButton] = {}
         nav = [
             ("📊", "Dashboard",  _PANEL_DASHBOARD),
             ("➕", "Add Entry",  _PANEL_ADD),
             ("📋", "History",    _PANEL_HISTORY),
+            ("🤝", "Loans",      _PANEL_LOANS),
+            ("👥", "Shared",     _PANEL_SHARED),
             ("📈", "Reports",    _PANEL_REPORTS),
+            ("💬", "Assistant",  _PANEL_ASSISTANT),
         ]
-        nav.insert(3, ("L", "Loans", _PANEL_LOANS))
-        nav.insert(4, ("S", "Shared", _PANEL_SHARED))
-        nav.append(("💬", "Assistant", _PANEL_ASSISTANT))
         for icon, label, panel in nav:
             btn = ctk.CTkButton(
                 self._sb,
-                text=icon,
-                anchor="center",
+                text=f"  {icon}   {label}",
+                anchor="w",
                 corner_radius=10,
-                width=36,
-                height=36,
+                height=44,
                 fg_color="transparent",
                 hover_color=C("hover"),
                 text_color=C("text2"),
-                font=ctk.CTkFont(size=13),
+                font=ctk.CTkFont(size=14),
                 command=lambda p=panel: self._show_panel(p),
             )
-            btn.pack(padx=8, pady=5)
+            btn.pack(fill="x", padx=12, pady=3)
             self._nav_btns[panel] = btn
-
-        # Bottom: theme toggle + settings
-        bottom = ctk.CTkFrame(self._sb, fg_color="transparent")
-        bottom.pack(side="bottom", fill="x", padx=10, pady=12)
-
-        _divider(self._sb)
 
         # Theme toggle
         tog_row = ctk.CTkFrame(self._sb, fg_color="transparent")
-        tog_row.pack(side="bottom", fill="x", padx=6, pady=(0, 8))
+        tog_row.pack(side="bottom", fill="x", padx=18, pady=(0, 14))
+        _lbl(tog_row, "🌙  Theme", size=12, color=C("text2")).pack(side="left")
         self._theme_sw = ctk.CTkSwitch(
             tog_row, text="", width=40,
             button_color=C("accent"), button_hover_color=C("accent_h"),
             progress_color=C("accent_dim"),
             command=self._toggle_theme,
         )
-        self._theme_sw.pack(anchor="center")
+        self._theme_sw.pack(side="right")
 
         ctk.CTkButton(
-            self._sb, text="⚙",
-            anchor="center", corner_radius=10, width=36, height=36,
+            self._sb, text="  ⚙   Settings",
+            anchor="w", corner_radius=10, height=40,
             fg_color="transparent", hover_color=C("hover"),
-            text_color=C("text3"), font=ctk.CTkFont(size=12),
-        ).pack(side="bottom", padx=8, pady=(0, 8))
+            text_color=C("text3"), font=ctk.CTkFont(size=13),
+        ).pack(side="bottom", fill="x", padx=12, pady=(0, 8))
 
     def _set_active_nav(self, panel: str):
         for p, btn in self._nav_btns.items():
@@ -1052,7 +1049,9 @@ class VoiceTrackApp(ctk.CTk):
         def _run():
             results, errors = [], []
             for line in lines:
-                res = extractor.extract(line)
+                trace: dict = {}
+                res = extractor.extract(line, trace=trace)
+                db.record_trace(trace)  # audit every parse, saved or not
                 if "error" in res:
                     errors.append(res["error"])
                 else:
