@@ -6,7 +6,7 @@ from uuid import uuid4
 import voicetrack.db as db_module
 from voicetrack.db import (
     init_db, insert_transaction, get_transactions, delete_transaction,
-    get_summary, get_category_totals, CATEGORIES,
+    get_summary, get_category_totals, get_finance_summary, CATEGORIES,
 )
 
 
@@ -89,3 +89,22 @@ def test_category_totals_sorted(tmp_db):
     amounts = [t["total"] for t in totals]
     assert amounts == sorted(amounts, reverse=True)
     assert totals[0]["category"] == "Food & Groceries"
+
+
+def test_cash_outflow_counts_legacy_expense_without_cash_flow(tmp_db):
+    con = db_module._connect(tmp_db)
+    try:
+        con.execute(
+            """
+            INSERT INTO transactions(type, amount, category, description, date, confidence, kind, cash_flow)
+            VALUES ('expense', 1000, 'Other', 'legacy expense', ?, 'high', 'standard', NULL)
+            """,
+            (date.today().isoformat(),),
+        )
+        con.commit()
+    finally:
+        con.close()
+
+    summary = get_finance_summary(path=tmp_db)
+    assert summary["personal_expenses"] == 1000
+    assert summary["cash_outflow"] == 1000

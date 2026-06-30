@@ -265,6 +265,7 @@ def record_loan_movement(
         "loan_taken": ("i_owe", "income", "Loan Taken", amount, -amount),
         "loan_repayment_received": ("owed_to_me", "income", "Loan Repayment", amount, -amount),
         "loan_repayment_made": ("i_owe", "expense", "Loan Repayment", -amount, amount),
+        "shared_payable": ("i_owe", "expense", "Shared Payable", 0, -amount),
     }
     if action not in definitions:
         raise ValueError(f"Unsupported loan action: {action}")
@@ -296,6 +297,7 @@ def record_loan_movement(
             "loan_taken": f"Loan Taken -> {person.title()}",
             "loan_repayment_received": f"Loan Repayment Received -> {person.title()}",
             "loan_repayment_made": f"Loan Repayment Made -> {person.title()}",
+            "shared_payable": f"Shared Payable -> {person.title()}",
         }
         tx_id = insert_transaction(
             {
@@ -405,10 +407,12 @@ def record_shared_expense(plan: dict, path=None) -> list[dict]:
     tx_date = _resolve_date(plan.get("date", "today"))
     components = plan.get("components", [])
     people = plan.get("people", [])
+    payer = (plan.get("payer") or "me").strip().title()
+    payer_is_me = payer.lower() == "me"
     description = plan.get("description", "Shared expense")
     total_paid = round(float(plan.get("total_paid", 0)), 2)
     my_share = round(sum(float(c.get("my_share", 0)) for c in components), 2)
-    others_share = round(total_paid - my_share, 2)
+    others_share = round(total_paid - my_share, 2) if payer_is_me else 0
 
     con = _connect(path)
     try:
@@ -438,11 +442,36 @@ def record_shared_expense(plan: dict, path=None) -> list[dict]:
                     "confidence": plan.get("confidence", "high"),
                     "kind": "shared_expense",
                     "shared_group_id": group_id,
-                    "cash_flow": -round(float(component["my_share"]), 2),
+                    "cash_flow": -round(float(component["my_share"]), 2) if payer_is_me else 0,
                 },
                 path=path,
             )
             inserted.append(get_transaction(tx_id, path=path))
+
+    if not payer_is_me:
+        loan_tx = record_loan_movement(
+            "shared_payable",
+            payer,
+            my_share,
+            date_value=tx_date,
+            notes=f"Shared expense paid by {payer}: {description}",
+            confidence=plan.get("confidence", "high"),
+            path=path,
+        )
+        inserted.append(loan_tx)
+        con = _connect(path)
+        try:
+            con.execute(
+                """
+                INSERT INTO shared_expense_participants(group_id, person_name, share_amount, status, loan_account_id)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (group_id, payer, my_share, "I owe", loan_tx.get("loan_account_id")),
+            )
+            con.commit()
+        finally:
+            con.close()
+        return inserted
 
     for person in people:
         share = round(float(person.get("share", 0)), 2)
@@ -490,6 +519,39 @@ def record_shared_expense(plan: dict, path=None) -> list[dict]:
 def apply_finance_plan(plan: dict, path=None) -> list[dict]:
     """Apply a parsed loan/shared-expense plan and return inserted transactions."""
     intent = plan.get("intent")
+    if intent == "loan_clear":
+        person = plan["person"].strip().title()
+        con = _connect(path)
+        try:
+            account = con.execute(
+                """
+                SELECT current_balance, loan_type
+                FROM loan_accounts
+                WHERE person_name = ? COLLATE NOCASE
+                """,
+                (person,),
+            ).fetchone()
+        finally:
+            con.close()
+        if not account or float(account["current_balance"]) <= 0:
+            raise ValueError(f"No active loan balance found for {person}")
+        action = (
+            "loan_repayment_received"
+            if account["loan_type"] == "owed_to_me"
+            else "loan_repayment_made"
+        )
+        return [
+            record_loan_movement(
+                action,
+                person,
+                float(account["current_balance"]),
+                date_value=plan.get("date", "today"),
+                notes=plan.get("notes", ""),
+                confidence=plan.get("confidence", "high"),
+                path=path,
+            )
+        ]
+
     if intent in {
         "loan_given",
         "loan_taken",
@@ -510,6 +572,152 @@ def apply_finance_plan(plan: dict, path=None) -> list[dict]:
     if intent == "shared_expense":
         return record_shared_expense(plan, path=path)
     raise ValueError(f"Unsupported finance plan: {intent}")
+
+
+def settle_loan_account(account_id: int, date_value: str = "today",
+                        notes: str = "Marked as paid", path=None) -> dict:
+    """Settle a loan's full outstanding balance and mark it Paid.
+
+    This records the matching repayment (so cash and receivables/payables update
+    correctly) rather than just flipping a status flag. Net worth stays consistent.
+    """
+    con = _connect(path)
+    try:
+        account = con.execute(
+            "SELECT person_name, current_balance, loan_type FROM loan_accounts WHERE id = ?",
+            (account_id,),
+        ).fetchone()
+    finally:
+        con.close()
+    if not account:
+        raise ValueError("Loan account not found")
+
+    balance = round(float(account["current_balance"]), 2)
+    if balance <= 0:
+        con = _connect(path)
+        try:
+            con.execute("UPDATE loan_accounts SET status = 'Paid' WHERE id = ?", (account_id,))
+            con.commit()
+        finally:
+            con.close()
+        return {}
+
+    action = (
+        "loan_repayment_received"
+        if account["loan_type"] == "owed_to_me"
+        else "loan_repayment_made"
+    )
+    return record_loan_movement(
+        action, account["person_name"], balance,
+        date_value=date_value, notes=notes, path=path,
+    )
+
+
+def delete_loan_account(account_id: int, path=None) -> None:
+    """Remove a fully-settled loan account record.
+
+    Refuses to delete a loan that still has an outstanding balance, so receivables
+    and payables can never be silently dropped. The underlying cash-history
+    transactions are kept (their loan link is just nulled).
+    """
+    con = _connect(path)
+    try:
+        account = con.execute(
+            "SELECT current_balance FROM loan_accounts WHERE id = ?", (account_id,)
+        ).fetchone()
+        if not account:
+            raise ValueError("Loan account not found")
+        if round(float(account["current_balance"]), 2) != 0:
+            raise ValueError(
+                "Cannot remove a loan with an outstanding balance. Mark it as paid first."
+            )
+        con.execute("DELETE FROM loan_transactions WHERE loan_account_id = ?", (account_id,))
+        con.execute("UPDATE transactions SET loan_account_id = NULL WHERE loan_account_id = ?", (account_id,))
+        con.execute("DELETE FROM loan_accounts WHERE id = ?", (account_id,))
+        con.commit()
+    finally:
+        con.close()
+
+
+def settle_shared_group(group_id: int, date_value: str = "today", path=None) -> list[dict]:
+    """Settle every participant share in a shared expense and mark the group Paid."""
+    con = _connect(path)
+    try:
+        participants = [
+            dict(r) for r in con.execute(
+                "SELECT * FROM shared_expense_participants WHERE group_id = ?", (group_id,)
+            ).fetchall()
+        ]
+    finally:
+        con.close()
+    if not participants:
+        raise ValueError("Shared expense not found")
+
+    settled: list[dict] = []
+    for participant in participants:
+        if participant["status"] != "Paid" and participant.get("loan_account_id"):
+            tx = settle_loan_account(
+                participant["loan_account_id"],
+                date_value=date_value,
+                notes="Shared expense settled",
+                path=path,
+            )
+            if tx:
+                settled.append(tx)
+
+    con = _connect(path)
+    try:
+        con.execute(
+            "UPDATE shared_expense_participants SET status = 'Paid' WHERE group_id = ?",
+            (group_id,),
+        )
+        con.commit()
+    finally:
+        con.close()
+    return settled
+
+
+def shared_group_outstanding(group_id: int, path=None) -> float:
+    """Return the total still-open balance across a shared group's participants."""
+    con = _connect(path)
+    try:
+        rows = con.execute(
+            """
+            SELECT la.current_balance AS balance, p.status AS status
+            FROM shared_expense_participants p
+            LEFT JOIN loan_accounts la ON la.id = p.loan_account_id
+            WHERE p.group_id = ?
+            """,
+            (group_id,),
+        ).fetchall()
+    finally:
+        con.close()
+    return round(sum(
+        float(r["balance"]) for r in rows
+        if r["balance"] is not None and r["status"] != "Paid"
+    ), 2)
+
+
+def delete_shared_group(group_id: int, path=None) -> None:
+    """Remove a fully-settled shared expense group record.
+
+    Refuses while any participant share is still outstanding. The user's own
+    expense transactions for the group are kept (their group link is nulled).
+    """
+    if shared_group_outstanding(group_id, path=path) != 0:
+        raise ValueError("Settle the shared expense before removing it.")
+    con = _connect(path)
+    try:
+        if not con.execute(
+            "SELECT 1 FROM shared_expense_groups WHERE id = ?", (group_id,)
+        ).fetchone():
+            raise ValueError("Shared expense not found")
+        con.execute("DELETE FROM shared_expense_participants WHERE group_id = ?", (group_id,))
+        con.execute("UPDATE transactions SET shared_group_id = NULL WHERE shared_group_id = ?", (group_id,))
+        con.execute("DELETE FROM shared_expense_groups WHERE id = ?", (group_id,))
+        con.commit()
+    finally:
+        con.close()
 
 
 def get_summary(path=None) -> dict:
@@ -559,9 +767,14 @@ def get_finance_summary(path=None) -> dict:
             float(r["amount"]) for r in rows
             if r["type"] == "expense" and r["kind"] in (None, "standard", "shared_expense")
         )
+        cash_flows = [
+            float(r["cash_flow"]) if r["cash_flow"] is not None
+            else (float(r["amount"]) if r["type"] == "income" else -float(r["amount"]))
+            for r in rows
+        ]
         cash_outflow = sum(
-            abs(float(r["cash_flow"])) for r in rows
-            if r["cash_flow"] is not None and float(r["cash_flow"]) < 0
+            abs(flow) for flow in cash_flows
+            if flow < 0
         )
         receivables = sum(float(a["current_balance"]) for a in accounts if a["loan_type"] == "owed_to_me")
         payables = sum(float(a["current_balance"]) for a in accounts if a["loan_type"] == "i_owe")
