@@ -1,5 +1,9 @@
 """Compact prompts for the local Qwen extraction pipeline."""
 
+# Bump when any prompt below changes; stored on every EventTrace so a result can
+# always be tied back to the exact prompt that produced it.
+PROMPT_VERSION = "2026-06-30.1"
+
 CATEGORY_LIST = (
     "Food & Groceries, Transport, Utilities, Health, Education, Shopping, "
     "Entertainment, Rent, Salary, Freelance, Other"
@@ -61,12 +65,19 @@ Rules:
 - participants lists EVERYONE sharing, including "me".
 - splits: only for people with a specific share. mode is "percent" (value=percent),
   "fixed" (value=money), or "equal". People not in splits share the rest equally with "me".
-- person/participant names are capitalized first names.
+- person/participant names are capitalized first names that ACTUALLY appear in the
+  sentence. Never invent a name. If no person is named, it is not a loan.
+- "<person> owes me <amount>" -> loan_given. "I owe <person> <amount>" -> loan_taken.
+- Money the user simply RECEIVED with no named lender (gifts, salary, refunds,
+  "gave me", "sent me", "paid me") is income, NOT a loan -> return {{"intent":"none"}}.
 - date is one of: "today","yesterday","last week","last month", or YYYY-MM-DD.
 - If it is NOT a loan or shared expense, return {{"intent":"none"}}.
 
 Examples:
 "I lent Sara 2000" -> {{"intent":"loan_given","person":"Sara","amount":2000,"date":"today"}}
+"Ali owes me 500" -> {{"intent":"loan_given","person":"Ali","amount":500,"date":"today"}}
+"gave me 3000" -> {{"intent":"none"}}
+"someone gave me 3000" -> {{"intent":"none"}}
 "I paid for cab 1000 and ali will send me 50% later" -> {{"intent":"shared_expense","payer":"me","total":1000,"category":"Transport","description":"cab","participants":["me","Ali"],"splits":[{{"person":"Ali","mode":"percent","value":50}}],"date":"today"}}
 "dinner was 3000, split equally with Ali and Sara" -> {{"intent":"shared_expense","payer":"me","total":3000,"category":"Food & Groceries","description":"dinner","participants":["me","Ali","Sara"],"splits":[],"date":"today"}}
 "Ali paid 2000 for lunch, we split it" -> {{"intent":"shared_expense","payer":"Ali","total":2000,"category":"Food & Groceries","description":"lunch","participants":["me","Ali"],"splits":[],"date":"today"}}

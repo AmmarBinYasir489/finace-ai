@@ -50,6 +50,21 @@ def test_extract_multi_transaction_normalize():
     assert len(txs) == 2
 
 
+# extract() populates an EventTrace when given a trace dict
+def test_extract_populates_trace_offline():
+    trace = {}
+    with patch("voicetrack.extractor._ollama_reachable", return_value=False):
+        result = extract("spent 500 on groceries", trace=trace)
+    assert "error" not in result
+    assert trace["request_id"]
+    assert trace["raw_input"] == "spent 500 on groceries"
+    assert trace["route"] == "transaction"
+    assert trace["fallback_used"] is True
+    assert trace["latency_ms"] >= 0
+    assert trace["prompt_version"]
+    assert trace["confidence"] is not None
+
+
 # LLM natural-language loan/shared parsing routes through build_plan_from_spec
 def test_llm_special_intent_routing():
     spec = {"intent": "shared_expense", "payer": "me", "total": 1000,

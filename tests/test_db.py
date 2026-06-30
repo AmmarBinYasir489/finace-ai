@@ -22,6 +22,33 @@ def tmp_db():
         db_file.unlink()
 
 
+def test_record_and_get_trace_roundtrip(tmp_db):
+    trace = {
+        "request_id": "req-123",
+        "raw_input": "spent 500 on food",
+        "normalized_input": "spent 500 on food",
+        "route": "transaction",
+        "final_event": '{"type":"expense","amount":500}',
+        "confidence": 0.9,
+        "model": "qwen2.5:1.5b",
+        "prompt_version": "test.1",
+        "latency_ms": 42,
+        "fallback_used": False,
+        "errors": "[]",
+    }
+    db_module.record_trace(trace, path=tmp_db)
+    rows = db_module.get_traces(path=tmp_db)
+    assert len(rows) == 1
+    assert rows[0]["request_id"] == "req-123"
+    assert rows[0]["fallback_used"] == 0       # bool coerced to int
+    assert rows[0]["confidence"] == 0.9
+
+
+def test_record_trace_ignored_without_request_id(tmp_db):
+    db_module.record_trace({"raw_input": "x"}, path=tmp_db)
+    assert db_module.get_traces(path=tmp_db) == []
+
+
 def test_init_creates_tables_and_seeds(tmp_db):
     con = db_module._connect(tmp_db)
     try:

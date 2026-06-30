@@ -297,7 +297,7 @@ def _shared_intent(text: str) -> dict | None:
         marker in lower
         for marker in [
             " split", "shared", " with ", " for me", "will pay", "paid me back immediately",
-            "between me", "%", "send me", "give me", "pay me", "owe me", "owes me",
+            "between me", "%", "send me", "give me", "pay me",
             "will send", "will give", "will return", "his share", "her share", "my share",
         ]
     )
@@ -362,7 +362,20 @@ def _to_amount(value: object) -> float | None:
         return None
 
 
-def _resolve_shared_spec(spec: dict, date_value: str) -> dict | None:
+def _name_in_text(name: str, text: str) -> bool:
+    """True if every word of a name appears in the source text.
+
+    Guards against the model hallucinating a person who was never mentioned.
+    With no text supplied, validation is skipped (returns True).
+    """
+    if not text:
+        return True
+    lowered = text.lower()
+    words = [w for w in re.split(r"\s+", name.lower()) if w]
+    return bool(words) and all(re.search(rf"\b{re.escape(w)}\b", lowered) for w in words)
+
+
+def _resolve_shared_spec(spec: dict, date_value: str, text: str = "") -> dict | None:
     """Compute personal/other shares from an LLM-extracted shared-expense spec.
 
     The model supplies the total, payer, participants, and any explicit shares;
@@ -377,13 +390,18 @@ def _resolve_shared_spec(spec: dict, date_value: str) -> dict | None:
     description = (str(spec.get("description") or "").strip() or "shared expense")
     category = str(spec.get("category") or _category_for(description) or "Other").strip()
 
+    # A non-"me" payer the model invented (not in the text) is untrustworthy.
+    if payer != "me" and not _name_in_text(payer, text):
+        return None
+
     others: list[str] = []
     for participant in spec.get("participants") or []:
         ps = str(participant).strip()
         if ps.lower() in _ME_WORDS:
             continue
         name = _clean_name(ps)
-        if name and name not in _STOP_NAMES and name not in others:
+        if (name and name not in _STOP_NAMES and name not in others
+                and _name_in_text(name, text)):
             others.append(name)
 
     explicit: dict[str, float] = {}
@@ -394,7 +412,7 @@ def _resolve_shared_spec(spec: dict, date_value: str) -> dict | None:
         if name_raw.lower() in _ME_WORDS or not name_raw:
             continue
         name = _clean_name(name_raw)
-        if name in _STOP_NAMES:
+        if name in _STOP_NAMES or not _name_in_text(name, text):
             continue
         value = _to_amount(split.get("value"))
         mode = str(split.get("mode", "equal")).lower()
@@ -440,11 +458,12 @@ def _resolve_shared_spec(spec: dict, date_value: str) -> dict | None:
     }
 
 
-def build_plan_from_spec(spec: dict) -> dict | None:
+def build_plan_from_spec(spec: dict, text: str = "") -> dict | None:
     """Turn an LLM-extracted finance spec into an applyable plan, or None.
 
     The model classifies and extracts; this function validates and structures.
-    Returns None for "none"/invalid specs so the caller can fall back.
+    `text` is the original input: person names not present in it are rejected as
+    hallucinations. Returns None for "none"/invalid specs so the caller can fall back.
     """
     if not isinstance(spec, dict):
         return None
@@ -454,7 +473,7 @@ def build_plan_from_spec(spec: dict) -> dict | None:
 
     if intent == "loan_clear":
         person = _clean_name(str(spec.get("person", "")))
-        if not person or person in _STOP_NAMES:
+        if not person or person in _STOP_NAMES or not _name_in_text(person, text):
             return None
         return {"intent": "loan_clear", "person": person, "date": date_value,
                 "notes": notes, "confidence": "high"}
@@ -462,12 +481,13 @@ def build_plan_from_spec(spec: dict) -> dict | None:
     if intent in _LOAN_SPEC_INTENTS:
         person = _clean_name(str(spec.get("person", "")))
         amount = _to_amount(spec.get("amount"))
-        if not person or person in _STOP_NAMES or amount is None or amount <= 0:
+        if (not person or person in _STOP_NAMES or amount is None or amount <= 0
+                or not _name_in_text(person, text)):
             return None
         return {"intent": intent, "person": person, "amount": amount,
                 "date": date_value, "notes": notes, "confidence": "high"}
 
     if intent == "shared_expense":
-        return _resolve_shared_spec(spec, date_value)
+        return _resolve_shared_spec(spec, date_value, text)
 
     return None
