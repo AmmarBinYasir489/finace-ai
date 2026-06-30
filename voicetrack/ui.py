@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import threading
 import tkinter as tk
-from tkinter import filedialog
+from tkinter import filedialog, messagebox
 import csv
 import datetime
 
@@ -13,6 +13,7 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 import voicetrack.db as db
 import voicetrack.extractor as extractor
 import voicetrack.charts as charts
+import voicetrack.assistant as assistant
 from voicetrack.db import CATEGORIES
 
 ctk.set_appearance_mode("dark")
@@ -25,6 +26,7 @@ _PANEL_HISTORY   = "History"
 _PANEL_REPORTS   = "Reports"
 _PANEL_LOANS     = "Loans"
 _PANEL_SHARED    = "Shared"
+_PANEL_ASSISTANT = "Assistant"
 
 PAGE_SIZE = 50
 
@@ -219,6 +221,7 @@ class VoiceTrackApp(ctk.CTk):
         ]
         nav.insert(3, ("L", "Loans", _PANEL_LOANS))
         nav.insert(4, ("S", "Shared", _PANEL_SHARED))
+        nav.append(("💬", "Assistant", _PANEL_ASSISTANT))
         for icon, label, panel in nav:
             btn = ctk.CTkButton(
                 self._sb,
@@ -299,6 +302,7 @@ class VoiceTrackApp(ctk.CTk):
         self._panels[_PANEL_LOANS]     = self._build_loans_panel()
         self._panels[_PANEL_SHARED]    = self._build_shared_panel()
         self._panels[_PANEL_REPORTS]   = self._build_reports_panel()
+        self._panels[_PANEL_ASSISTANT] = self._build_assistant_panel()
 
     def _show_panel(self, name: str):
         self._current_panel = name
@@ -317,6 +321,8 @@ class VoiceTrackApp(ctk.CTk):
             self._refresh_shared()
         elif name == _PANEL_REPORTS:
             self._refresh_reports()
+        elif name == _PANEL_ASSISTANT:
+            self._input_chat.focus_set()
 
     # ── Dashboard ────────────────────────────────────────
 
@@ -336,17 +342,18 @@ class VoiceTrackApp(ctk.CTk):
 
         # ── Summary cards ──
         cards_row = ctk.CTkFrame(panel, fg_color="transparent")
-        cards_row.pack(fill="x", padx=28, pady=16)
+        cards_row.pack(fill="x", padx=28, pady=(16, 8))
 
         self._sum_labels: dict[str, ctk.CTkLabel] = {}
         card_defs = [
             ("income_month",  "Income",       "↑", C("income_fg"),  C("income_bg")),
             ("expense_month", "Expenses",     "↓", C("expense_fg"), C("expense_bg")),
-            ("balance",       "Available Cash",  "◈", C("accent"),     C("accent_dim")),
+            ("net_worth",     "Net Worth",  "◈", C("warning"),     C("accent_dim")),
         ]
         for key, title, icon, color, bg in card_defs:
-            c = _card(cards_row)
+            c = _card(cards_row, height=118)
             c.pack(side="left", expand=True, fill="both", padx=5)
+            c.pack_propagate(False)
 
             # Coloured left accent stripe
             stripe = ctk.CTkFrame(c, fg_color=color, width=4,
@@ -371,25 +378,27 @@ class VoiceTrackApp(ctk.CTk):
             lbl.pack(anchor="w", pady=(6, 0))
             self._sum_labels[key] = lbl
 
-            _lbl(inner, "This period", size=10, color=C("text3")).pack(anchor="w")
+            subtitle = "Cash + receivables - payables" if key == "net_worth" else "This period"
+            _lbl(inner, subtitle, size=10, color=C("text3")).pack(anchor="w")
 
         # ── Period tabs (pill style) ──
         finance_row = ctk.CTkFrame(panel, fg_color="transparent")
         finance_row.pack(fill="x", padx=28, pady=(0, 12))
         self._finance_labels: dict[str, ctk.CTkLabel] = {}
-        for key, title in [
-            ("cash_outflow", "Cash Outflow"),
-            ("personal_expenses", "Personal Expenses"),
-            ("outstanding_receivables", "Receivables"),
-            ("outstanding_payables", "Payables"),
-            ("net_cash", "Net Cash"),
-            ("net_worth", "Net Worth"),
+        for key, title, color in [
+            ("cash_outflow", "Cash Outflow", C("expense_fg")),
+            ("personal_expenses", "Personal Expenses", "#f59e0b"),
+            ("outstanding_receivables", "Receivables", C("income_fg")),
+            ("outstanding_payables", "Payables", C("danger")),
+            ("net_cash", "Available Cash", C("accent")),
         ]:
-            mini = _surface(finance_row, radius=10)
-            mini.pack(side="left", fill="x", expand=True, padx=4)
-            _lbl(mini, title, size=10, color=C("text3")).pack(anchor="w", padx=10, pady=(8, 0))
-            lbl = _lbl(mini, "PKR 0", size=13, weight="bold")
-            lbl.pack(anchor="w", padx=10, pady=(0, 8))
+            mini = _surface(finance_row, radius=10, height=82)
+            mini.configure(border_width=1, border_color=color)
+            mini.pack(side="left", fill="x", expand=True, padx=5)
+            mini.pack_propagate(False)
+            _lbl(mini, title, size=12, color=C("text2")).pack(anchor="w", padx=14, pady=(14, 0))
+            lbl = _lbl(mini, "PKR 0", size=18, weight="bold", color=color)
+            lbl.pack(anchor="w", padx=14, pady=(2, 12))
             self._finance_labels[key] = lbl
 
         tab_bg = _surface(panel, radius=10)
@@ -502,14 +511,15 @@ class VoiceTrackApp(ctk.CTk):
             else (float(t["amount"]) if t["type"] == "income" else -float(t["amount"]))
             for t in txs
         )
+        finance = db.get_finance_summary()
 
         self._sum_labels["income_month"].configure(text=f"PKR {income:,.0f}")
         self._sum_labels["expense_month"].configure(text=f"PKR {expense:,.0f}")
-        bal_color = C("income_fg") if cash_balance >= 0 else C("expense_fg")
-        self._sum_labels["balance"].configure(
-            text=f"PKR {cash_balance:,.0f}", text_color=bal_color)
+        net_worth = finance.get("net_worth", cash_balance)
+        worth_color = C("income_fg") if net_worth >= 0 else C("expense_fg")
+        self._sum_labels["net_worth"].configure(
+            text=f"PKR {net_worth:,.0f}", text_color=worth_color)
 
-        finance = db.get_finance_summary()
         for key, label in getattr(self, "_finance_labels", {}).items():
             value = finance.get(key, 0)
             label.configure(text=f"PKR {value:,.0f}")
@@ -1063,6 +1073,7 @@ class VoiceTrackApp(ctk.CTk):
                 "loan_taken",
                 "loan_repayment_received",
                 "loan_repayment_made",
+                "loan_clear",
                 "shared_expense",
             }:
                 finance_plans.append(res)
@@ -1082,9 +1093,17 @@ class VoiceTrackApp(ctk.CTk):
             tx_id = db.insert_transaction(tx)
             inserted_txs.append(db.get_transaction(tx_id))
         for plan in finance_plans:
-            inserted_txs.extend(db.apply_finance_plan(plan))
+            try:
+                inserted_txs.extend(db.apply_finance_plan(plan))
+            except ValueError as exc:
+                errors.append(str(exc))
 
         count = len(inserted_txs)
+        if count == 0:
+            self._error_label.configure(
+                text=errors[0] if errors else "Could not save this transaction."
+            )
+            return
 
         # Success card
         scard = ctk.CTkFrame(self._preview_container,
@@ -1175,6 +1194,42 @@ class VoiceTrackApp(ctk.CTk):
             _lbl(body, f"Last activity: {account['last_activity']}",
                  size=10, color=C("text3")).pack(anchor="w", pady=(2, 0))
 
+            actions = ctk.CTkFrame(card, fg_color="transparent")
+            actions.pack(fill="x", padx=16, pady=(0, 12))
+            is_settled = (
+                account["status"] == "Paid"
+                or round(float(account["current_balance"]), 2) == 0
+            )
+            if is_settled:
+                _btn(actions, "Remove",
+                     command=lambda aid=account["id"]: self._remove_loan(aid),
+                     width=90, height=30, style="danger").pack(side="right")
+            else:
+                _btn(actions, "Mark as Paid",
+                     command=lambda aid=account["id"]: self._settle_loan(aid),
+                     width=120, height=30, style="primary").pack(side="right")
+
+    def _settle_loan(self, account_id: int):
+        try:
+            db.settle_loan_account(account_id)
+        except ValueError as exc:
+            messagebox.showerror("VoiceTrack", str(exc))
+        self._refresh_loans()
+        self._refresh_dashboard()
+
+    def _remove_loan(self, account_id: int):
+        if not messagebox.askyesno(
+            "Remove loan",
+            "Remove this settled loan from the list? Its cash history is kept.",
+        ):
+            return
+        try:
+            db.delete_loan_account(account_id)
+        except ValueError as exc:
+            messagebox.showerror("VoiceTrack", str(exc))
+        self._refresh_loans()
+        self._refresh_dashboard()
+
     def _build_shared_panel(self) -> ctk.CTkFrame:
         panel = ctk.CTkFrame(self._content, fg_color="transparent")
         hdr = ctk.CTkFrame(panel, fg_color="transparent")
@@ -1224,9 +1279,114 @@ class VoiceTrackApp(ctk.CTk):
             if participants:
                 text = "  |  ".join(
                     f"{p['person_name']}: PKR {p['share_amount']:,.0f}"
+                    f" ({p['status']})"
                     for p in participants
                 )
                 _lbl(body, text, size=11, color=C("text3")).pack(anchor="w", pady=(4, 0))
+
+            actions = ctk.CTkFrame(card, fg_color="transparent")
+            actions.pack(fill="x", padx=16, pady=(0, 12))
+            outstanding = db.shared_group_outstanding(group["id"])
+            if outstanding != 0:
+                _btn(actions, "Mark Settled",
+                     command=lambda gid=group["id"]: self._settle_shared(gid),
+                     width=120, height=30, style="primary").pack(side="right")
+            else:
+                _btn(actions, "Remove",
+                     command=lambda gid=group["id"]: self._remove_shared(gid),
+                     width=90, height=30, style="danger").pack(side="right")
+
+    def _settle_shared(self, group_id: int):
+        try:
+            db.settle_shared_group(group_id)
+        except ValueError as exc:
+            messagebox.showerror("VoiceTrack", str(exc))
+        self._refresh_shared()
+        self._refresh_loans()
+        self._refresh_dashboard()
+
+    def _remove_shared(self, group_id: int):
+        if not messagebox.askyesno(
+            "Remove shared expense",
+            "Remove this settled shared expense from the list? Your expense history is kept.",
+        ):
+            return
+        try:
+            db.delete_shared_group(group_id)
+        except ValueError as exc:
+            messagebox.showerror("VoiceTrack", str(exc))
+        self._refresh_shared()
+        self._refresh_dashboard()
+
+    def _build_assistant_panel(self) -> ctk.CTkFrame:
+        panel = ctk.CTkFrame(self._content, fg_color="transparent")
+
+        hdr = ctk.CTkFrame(panel, fg_color="transparent")
+        hdr.pack(fill="x", padx=28, pady=(22, 0))
+        _lbl(hdr, "💬  Assistant", size=22, weight="bold").pack(side="left")
+        _lbl(hdr, "Ask about your money — answers come straight from your data",
+             size=11, color=C("text3")).pack(side="left", padx=(12, 0), pady=(8, 0))
+
+        self._chat_scroll = ctk.CTkScrollableFrame(
+            panel, fg_color="transparent",
+            scrollbar_button_color=C("border"),
+            scrollbar_button_hover_color=C("surface3"))
+        self._chat_scroll.pack(fill="both", expand=True, padx=28, pady=14)
+
+        # Quick-question chips
+        chips = ctk.CTkFrame(panel, fg_color="transparent")
+        chips.pack(fill="x", padx=28, pady=(0, 6))
+        for text in ["Who owes me money?", "How much loan do I need to pay?",
+                     "How much did I spend on food this month?", "What is my net worth?"]:
+            _btn(chips, text, command=lambda t=text: self._send_chat(t),
+                 height=30, width=len(text) * 7 + 24, style="surface").pack(side="left", padx=(0, 6))
+
+        # Input row
+        row = ctk.CTkFrame(panel, fg_color="transparent")
+        row.pack(fill="x", padx=28, pady=(0, 20))
+        self._input_chat = ctk.CTkEntry(
+            row, placeholder_text="Ask a question…", height=40,
+            fg_color=C("surface2"), border_color=C("border"))
+        self._input_chat.pack(side="left", fill="x", expand=True, padx=(0, 8))
+        self._input_chat.bind("<Return>", lambda _e: self._send_chat())
+        _btn(row, "Send", command=self._send_chat, width=90, height=40).pack(side="left")
+
+        self._add_chat_bubble(
+            "Hi! Ask me things like \"how much did I spend on food this month?\", "
+            "\"who owes me money?\", or \"how much loan do I need to pay?\".",
+            sender="bot")
+        return panel
+
+    def _add_chat_bubble(self, text: str, sender: str):
+        rowf = ctk.CTkFrame(self._chat_scroll, fg_color="transparent")
+        rowf.pack(fill="x", pady=4)
+        is_user = sender == "user"
+        bubble = ctk.CTkFrame(
+            rowf, corner_radius=12,
+            fg_color=C("accent_dim") if is_user else C("surface2"))
+        bubble.pack(side="right" if is_user else "left", padx=4)
+        _lbl(bubble, text, size=12,
+             color=C("text") if is_user else C("text2"),
+             justify="left", anchor="w", wraplength=560).pack(
+                 padx=14, pady=10, anchor="w")
+        # Scroll to the newest message.
+        try:
+            self.update_idletasks()
+            self._chat_scroll._parent_canvas.yview_moveto(1.0)
+        except Exception:
+            pass
+
+    def _send_chat(self, text: str | None = None):
+        question = text if text is not None else self._input_chat.get().strip()
+        if not question:
+            return
+        self._add_chat_bubble(question, sender="user")
+        self._input_chat.delete(0, "end")
+        try:
+            reply = assistant.answer(question)
+        except Exception as exc:
+            reply = f"Something went wrong reading your data: {exc}"
+        self._add_chat_bubble(reply, sender="bot")
 
     def _build_reports_panel(self) -> ctk.CTkFrame:
         panel = ctk.CTkFrame(self._content, fg_color="transparent")

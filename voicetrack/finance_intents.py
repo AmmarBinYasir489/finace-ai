@@ -14,7 +14,9 @@ from collections import defaultdict
 _STOP_NAMES = {
     "I", "Me", "My", "We", "Yesterday", "Today", "Split", "Cab", "Taxi",
     "Food", "Hotel", "Dinner", "Groceries", "Loaded", "Texas", "Fries",
-    "Savour", "Foods",
+    "Savour", "Foods", "Market", "Shop", "Mall", "Paid", "Shared", "Equally",
+    "Covered", "Bought",
+    "The", "A", "An",
 }
 
 
@@ -32,6 +34,32 @@ def _names(text: str) -> list[str]:
         name = _clean_name(match.group())
         if name not in _STOP_NAMES and name not in found:
             found.append(name)
+    return found
+
+
+def _name_candidates(text: str) -> list[str]:
+    """Find likely person names in casual text, including lowercase names."""
+    found = _names(text)
+    patterns = [
+        r"\b([a-zA-Z]{3,})\s+paid\b",
+        r"\b([a-zA-Z]{3,})\s+covered\b",
+        r"\b([a-zA-Z]{3,})\s+bought\b",
+        r"\bpaid\s+by\s+([a-zA-Z]{3,})\b",
+        r"\bwith\s+([a-zA-Z]{3,})\b",
+        r"\b([a-zA-Z]{3,})\s+and\s+i\b",
+        r"\bi\s+and\s+([a-zA-Z]{3,})\b",
+        r"\bfrom\s+([a-zA-Z]{3,})\b",
+        r"\bto\s+([a-zA-Z]{3,})\b",
+        # "ali will send/give/pay me ...", "ali owes ...", "ali pays/sends me ..."
+        r"\b([a-zA-Z]{3,})\s+will\s+(?:send|give|pay|return|transfer)\b",
+        r"\b([a-zA-Z]{3,})\s+(?:owe|owes)\b",
+        r"\b([a-zA-Z]{3,})\s+(?:sends?|gives?|pays?|returns?)\s+me\b",
+    ]
+    for pattern in patterns:
+        for match in re.finditer(pattern, text, flags=re.IGNORECASE):
+            name = _clean_name(match.group(1))
+            if name not in _STOP_NAMES and name not in found:
+                found.append(name)
     return found
 
 
@@ -53,6 +81,8 @@ def _category_for(text: str) -> str:
         return "Transport"
     if any(w in lower for w in ["food", "dinner", "lunch", "breakfast", "fries", "burger", "restaurant", "grocer"]):
         return "Food & Groceries"
+    if any(w in lower for w in ["market", "shop", "shopping", "mall", "bought", "purchase"]):
+        return "Shopping"
     if "hotel" in lower or "bill" in lower:
         return "Other"
     return "Other"
@@ -72,6 +102,10 @@ def _component_description(text: str, category: str) -> str:
         return "dinner shared expense"
     if "grocer" in lower:
         return "groceries shared expense"
+    if "market" in lower:
+        return "market shared expense"
+    if "shop" in lower:
+        return "shopping shared expense"
     if "food" in lower:
         return "food shared expense"
     if "hotel" in lower:
@@ -81,6 +115,22 @@ def _component_description(text: str, category: str) -> str:
 
 def _loan_intent(text: str) -> dict | None:
     date_value = _date_token(text)
+    clear_match = re.search(
+        r"\b(?:loan\s+from\s+|loan\s+to\s+)?([a-zA-Z]{3,})\b[^.]*\b(?:clear|cleared|settled|closed|paid)\b",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if clear_match and not _amounts(text):
+        person = _clean_name(clear_match.group(1))
+        if person not in _STOP_NAMES:
+            return {
+                "intent": "loan_clear",
+                "person": person,
+                "date": date_value,
+                "notes": text,
+                "confidence": "high",
+            }
+
     patterns = [
         ("loan_given", r"\b(?:i\s+)?(?:lent|loaned)\s+([A-Z][a-z]+)\s+(\d[\d,]*(?:\.\d+)?)\b"),
         ("loan_taken", r"\b(?:i\s+)?borrowed\s+(\d[\d,]*(?:\.\d+)?)\s+from\s+([A-Z][a-z]+)\b"),
@@ -116,17 +166,35 @@ def _people_after_markers(text: str) -> list[str]:
     for pattern in patterns:
         for match in re.finditer(pattern, text, flags=re.IGNORECASE):
             segment = match.group(1)
-            for name in _names(segment):
+            for name in _name_candidates(segment):
                 if name not in people:
                     people.append(name)
     if not people:
-        people = _names(text)
+        people = _name_candidates(text)
     return people
+
+
+def _payer(text: str) -> str:
+    """Return who paid the bill; 'me' is the default for existing behavior."""
+    if re.search(r"\b(i|me|my)\s+(?:paid|covered|bought)\b", text, flags=re.IGNORECASE):
+        return "me"
+    patterns = [
+        r"\b([a-zA-Z]{3,})\s+(?:paid|covered|bought)\b",
+        r"\bpaid\s+by\s+([a-zA-Z]{3,})\b",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, text, flags=re.IGNORECASE)
+        if match:
+            name = _clean_name(match.group(1))
+            if name not in _STOP_NAMES:
+                return name
+    return "me"
 
 
 def _component_amounts(text: str) -> list[dict]:
     components: list[dict] = []
     patterns = [
+        (r"\b(?:paid|bill|total|market|shopping|shop)[^.]*?\b(?:for|was|is|paid)?\s*(\d[\d,]*(?:\.\d+)?)", None),
         (r"\b(cab|taxi|ride|fare|bus|train|rickshaw|uber)\b[^.]*?\b(?:for|was|is)\s+(\d[\d,]*(?:\.\d+)?)", "Transport"),
         (r"\b(food|dinner|lunch|breakfast|loaded fries|fries|burger|grocer\w*)\b[^.]*?\b(?:for|was|is)\s+(\d[\d,]*(?:\.\d+)?)", "Food & Groceries"),
         (r"\b(hotel bill|hotel|bill)\b[^.]*?\b(?:for|was|is)\s+(\d[\d,]*(?:\.\d+)?)", "Other"),
@@ -134,15 +202,17 @@ def _component_amounts(text: str) -> list[dict]:
     seen: set[float] = set()
     for pattern, category in patterns:
         for match in re.finditer(pattern, text, flags=re.IGNORECASE):
-            amount = float(match.group(2).replace(",", ""))
+            amount_group = match.group(2) if category else match.group(1)
+            amount = float(amount_group.replace(",", ""))
             if amount in seen:
                 continue
             seen.add(amount)
             phrase = match.group(0)
+            final_category = category or _category_for(text)
             components.append({
                 "amount": amount,
-                "category": category,
-                "description": _component_description(phrase, category),
+                "category": final_category,
+                "description": _component_description(phrase, final_category),
             })
 
     if components:
@@ -168,22 +238,47 @@ def _paid_back_people(text: str, people: list[str]) -> set[str]:
     return paid_back
 
 
+_SHARE_VERBS = r"(?:will\s+)?(?:pay|send|give|return|transfer|owe)s?(?:\s+me)?"
+
+
+def _percent_owner(text: str, people: list[str]) -> str | None:
+    """Find which person a '<n>%' share belongs to.
+
+    Tries an explicit "<name> will send/pay/owes me <n>%" phrasing first, then
+    falls back to the sole other participant when there is exactly one.
+    """
+    match = re.search(rf"\b([a-zA-Z]{{3,}})\s+{_SHARE_VERBS}\s+\d+(?:\.\d+)?\s*%", text, flags=re.IGNORECASE)
+    if match:
+        name = _clean_name(match.group(1))
+        if name not in _STOP_NAMES:
+            return name
+    others = [p for p in people if p.lower() != "me"]
+    return others[0] if len(others) == 1 else None
+
+
 def _split_component(component: dict, text: str, all_people: list[str]) -> tuple[float, dict[str, float]]:
     amount = float(component["amount"])
     lower = text.lower()
     people = list(all_people)
 
-    percent_match = re.search(r"\b([A-Z][a-z]+)\s+will\s+pay\s+(\d+(?:\.\d+)?)\s*%", text, flags=re.IGNORECASE)
-    if percent_match and len(_component_amounts(text)) == 1:
-        person = _clean_name(percent_match.group(1))
-        share = round(amount * float(percent_match.group(2)) / 100, 2)
-        return round(amount - share, 2), {person: share}
+    # Percentage split: "<name> will send/pay me 50%", "<name> owes 50%", or just "50%".
+    percent_value = re.search(r"(\d+(?:\.\d+)?)\s*%", text)
+    if percent_value and len(_component_amounts(text)) == 1:
+        person = _percent_owner(text, people)
+        if person:
+            share = round(amount * float(percent_value.group(1)) / 100, 2)
+            return round(amount - share, 2), {person: share}
 
-    fixed_match = re.search(r"\b([A-Z][a-z]+)\s+pays?\s+(\d[\d,]*(?:\.\d+)?)\b", text, flags=re.IGNORECASE)
+    # Fixed share: "<name> will send/pay me 500".
+    fixed_match = re.search(
+        rf"\b([a-zA-Z]{{3,}})\s+{_SHARE_VERBS}\s+(\d[\d,]*(?:\.\d+)?)\b",
+        text, flags=re.IGNORECASE,
+    )
     if fixed_match and len(_component_amounts(text)) == 1:
         person = _clean_name(fixed_match.group(1))
-        share = float(fixed_match.group(2).replace(",", ""))
-        return round(amount - share, 2), {person: share}
+        if person not in _STOP_NAMES:
+            share = float(fixed_match.group(2).replace(",", ""))
+            return round(amount - share, 2), {person: share}
 
     if component["category"] == "Food & Groceries" and "food only between me and ali" in lower:
         people = [p for p in people if p.lower() == "ali"]
@@ -200,12 +295,19 @@ def _shared_intent(text: str) -> dict | None:
     lower = text.lower()
     has_shared_marker = any(
         marker in lower
-        for marker in [" split", " with ", " for me", "will pay", "paid me back immediately", "between me"]
+        for marker in [
+            " split", "shared", " with ", " for me", "will pay", "paid me back immediately",
+            "between me", "%", "send me", "give me", "pay me", "owe me", "owes me",
+            "will send", "will give", "will return", "his share", "her share", "my share",
+        ]
     )
     if not has_shared_marker:
         return None
 
     people = _people_after_markers(text)
+    payer = _payer(text)
+    if payer != "me" and payer not in people:
+        people.append(payer)
     if not people:
         return None
 
@@ -227,6 +329,7 @@ def _shared_intent(text: str) -> dict | None:
     return {
         "intent": "shared_expense",
         "description": "Shared expense",
+        "payer": payer,
         "date": _date_token(text),
         "total_paid": round(sum(float(c["amount"]) for c in components), 2),
         "components": component_rows,
@@ -244,3 +347,127 @@ def parse_special_intent(text: str) -> dict | None:
     if loan:
         return loan
     return _shared_intent(text)
+
+
+_ME_WORDS = {"me", "i", "myself"}
+_LOAN_SPEC_INTENTS = {
+    "loan_given", "loan_taken", "loan_repayment_received", "loan_repayment_made",
+}
+
+
+def _to_amount(value: object) -> float | None:
+    try:
+        return round(float(str(value).replace(",", "").replace("%", "").strip()), 2)
+    except (TypeError, ValueError):
+        return None
+
+
+def _resolve_shared_spec(spec: dict, date_value: str) -> dict | None:
+    """Compute personal/other shares from an LLM-extracted shared-expense spec.
+
+    The model supplies the total, payer, participants, and any explicit shares;
+    Python does all the arithmetic here so no math depends on the model.
+    """
+    total = _to_amount(spec.get("total"))
+    if total is None or total <= 0:
+        return None
+
+    payer_raw = str(spec.get("payer") or "me").strip()
+    payer = "me" if payer_raw.lower() in _ME_WORDS else _clean_name(payer_raw)
+    description = (str(spec.get("description") or "").strip() or "shared expense")
+    category = str(spec.get("category") or _category_for(description) or "Other").strip()
+
+    others: list[str] = []
+    for participant in spec.get("participants") or []:
+        ps = str(participant).strip()
+        if ps.lower() in _ME_WORDS:
+            continue
+        name = _clean_name(ps)
+        if name and name not in _STOP_NAMES and name not in others:
+            others.append(name)
+
+    explicit: dict[str, float] = {}
+    for split in spec.get("splits") or []:
+        if not isinstance(split, dict):
+            continue
+        name_raw = str(split.get("person", "")).strip()
+        if name_raw.lower() in _ME_WORDS or not name_raw:
+            continue
+        name = _clean_name(name_raw)
+        if name in _STOP_NAMES:
+            continue
+        value = _to_amount(split.get("value"))
+        mode = str(split.get("mode", "equal")).lower()
+        if name not in others:
+            others.append(name)
+        if value is None:
+            continue
+        if mode == "percent":
+            explicit[name] = round(total * value / 100, 2)
+        elif mode == "fixed":
+            explicit[name] = round(value, 2)
+        # "equal" -> handled by the remainder split below.
+
+    remainder_people = [p for p in others if p not in explicit]
+    remaining = round(total - round(sum(explicit.values()), 2), 2)
+    equal_share = round(remaining / (len(remainder_people) + 1), 2) if remaining > 0 else 0
+
+    people_shares = dict(explicit)
+    for person in remainder_people:
+        people_shares[person] = equal_share
+
+    my_share = round(total - round(sum(people_shares.values()), 2), 2)
+    if my_share < 0:
+        return None
+
+    return {
+        "intent": "shared_expense",
+        "description": description,
+        "payer": payer,
+        "date": date_value,
+        "total_paid": round(total, 2),
+        "components": [{
+            "amount": round(total, 2),
+            "category": category,
+            "description": description,
+            "my_share": my_share,
+        }],
+        "people": [
+            {"name": person, "share": round(share, 2), "paid_back": False}
+            for person, share in people_shares.items()
+        ],
+        "confidence": "high",
+    }
+
+
+def build_plan_from_spec(spec: dict) -> dict | None:
+    """Turn an LLM-extracted finance spec into an applyable plan, or None.
+
+    The model classifies and extracts; this function validates and structures.
+    Returns None for "none"/invalid specs so the caller can fall back.
+    """
+    if not isinstance(spec, dict):
+        return None
+    intent = str(spec.get("intent", "")).strip().lower()
+    date_value = str(spec.get("date") or "today").strip() or "today"
+    notes = str(spec.get("notes") or "").strip()
+
+    if intent == "loan_clear":
+        person = _clean_name(str(spec.get("person", "")))
+        if not person or person in _STOP_NAMES:
+            return None
+        return {"intent": "loan_clear", "person": person, "date": date_value,
+                "notes": notes, "confidence": "high"}
+
+    if intent in _LOAN_SPEC_INTENTS:
+        person = _clean_name(str(spec.get("person", "")))
+        amount = _to_amount(spec.get("amount"))
+        if not person or person in _STOP_NAMES or amount is None or amount <= 0:
+            return None
+        return {"intent": intent, "person": person, "amount": amount,
+                "date": date_value, "notes": notes, "confidence": "high"}
+
+    if intent == "shared_expense":
+        return _resolve_shared_spec(spec, date_value)
+
+    return None

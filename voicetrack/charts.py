@@ -95,6 +95,8 @@ def balance_trend(data: list) -> Figure:
 def report_spending_donut(data: list) -> Figure:
     """Dark dashboard donut chart for report cards."""
     fig, ax = _base_fig(figsize=(5.2, 3.2))
+    fig.patch.set_facecolor("#111827")
+    ax.set_facecolor("#111827")
     ax.axis("equal")
     ax.axis("off")
     if not data:
@@ -106,13 +108,13 @@ def report_spending_donut(data: list) -> Figure:
     labels = [d["category"] for d in data[:6]]
     values = [float(d["total"]) for d in data[:6]]
     total = sum(values)
-    colors = ["#38bdf8", "#34d399", "#818cf8", "#fb923c", "#f472b6", "#94a3b8"]
+    colors = ["#38bdf8", "#34d399", "#a78bfa", "#fbbf24", "#f472b6", "#94a3b8"]
     ax.pie(
         values,
         startangle=90,
         counterclock=False,
         colors=colors[: len(values)],
-        wedgeprops={"width": 0.38, "edgecolor": "none"},
+        wedgeprops={"width": 0.38, "edgecolor": "#111827", "linewidth": 2},
     )
     ax.text(0, 0.08, "TOTAL", ha="center", va="center", fontsize=7,
             color="#547296")
@@ -128,7 +130,7 @@ def report_spending_donut(data: list) -> Figure:
         bbox_to_anchor=(1.0, 0.5),
         frameon=False,
         fontsize=8,
-        labelcolor="#c7d2fe",
+        labelcolor="#dbeafe",
         handlelength=0.8,
         handletextpad=0.6,
     )
@@ -139,6 +141,8 @@ def report_spending_donut(data: list) -> Figure:
 def report_income_expense_bars(data: list) -> Figure:
     """Dark grouped bar chart for income-vs-expense reports."""
     fig, ax = _base_fig(figsize=(5.2, 3.2))
+    fig.patch.set_facecolor("#111827")
+    ax.set_facecolor("#111827")
     if not data:
         ax.text(0.5, 0.5, "No monthly data", ha="center", va="center",
                 fontsize=9, color="#8aa4c8", transform=ax.transAxes)
@@ -159,12 +163,13 @@ def report_income_expense_bars(data: list) -> Figure:
     ax.bar(x - width / 2, income, width, label="Income", color="#34d399")
     ax.bar(x + width / 2, expense, width, label="Expense", color="#fb7185")
     ax.set_xticks(x)
-    ax.set_xticklabels(months, color="#6d8bb3", fontsize=8)
-    ax.tick_params(axis="y", left=False, labelleft=False)
-    ax.grid(axis="y", color="#1e3a5f", alpha=0.35, linewidth=0.7)
+    ax.set_xticklabels(months, color="#c7d2fe", fontsize=8)
+    ax.tick_params(axis="y", colors="#94a3b8", labelsize=8)
+    ax.grid(axis="y", color="#334155", alpha=0.55, linewidth=0.7)
+    ax.set_axisbelow(True)
     for spine in ax.spines.values():
         spine.set_visible(False)
     ax.legend(loc="upper right", frameon=False, fontsize=8,
-              labelcolor="#8aa4c8")
+              labelcolor="#dbeafe")
     fig.tight_layout()
     return fig

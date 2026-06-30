@@ -19,7 +19,11 @@ from datetime import datetime, timedelta
 import requests
 
 from voicetrack.config import OLLAMA_FALLBACK_MODEL, OLLAMA_HOST, OLLAMA_MODEL, OLLAMA_TIMEOUT
-from voicetrack.prompts import EXTRACTOR_SYSTEM_PROMPT, ORCHESTRATOR_SYSTEM_PROMPT
+from voicetrack.prompts import (
+    EXTRACTOR_SYSTEM_PROMPT,
+    FINANCE_INTENT_SYSTEM_PROMPT,
+    ORCHESTRATOR_SYSTEM_PROMPT,
+)
 
 
 _ALLOWED_TYPES = {"expense", "income"}
@@ -36,6 +40,44 @@ _ALLOWED_CATEGORIES = {
     "Freelance",
     "Other",
 }
+
+_AMOUNT_WORDS = {
+    "zero", "one", "two", "three", "four", "five", "six", "seven", "eight",
+    "nine", "ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen",
+    "sixteen", "seventeen", "eighteen", "nineteen", "twenty", "thirty",
+    "forty", "fifty", "sixty", "seventy", "eighty", "ninety", "hundred",
+    "thousand", "lakh", "lac", "million", "billion", "rupee", "rupees",
+    "pkr", "rs",
+}
+
+
+_SCALE_WORDS = {
+    "k": 1_000, "thousand": 1_000,
+    "lac": 100_000, "lakh": 100_000, "lakhs": 100_000,
+    "m": 1_000_000, "million": 1_000_000,
+    "cr": 10_000_000, "crore": 10_000_000,
+    "b": 1_000_000_000, "billion": 1_000_000_000,
+}
+_SHORTHAND_RX = re.compile(
+    r"\b(\d[\d,]*(?:\.\d+)?)\s*"
+    r"(k|m|b|lac|lakhs?|cr|crore|thousand|million|billion)\b",
+    re.IGNORECASE,
+)
+
+
+def _expand_shorthand_amounts(text: str) -> str:
+    """Expand spoken money shorthand to full integers before any parsing.
+
+    e.g. "5k" -> "5000", "1.5k" -> "1500", "80 thousand" -> "80000",
+    "5 lakh" -> "500000". Keeps the rest of the sentence intact so the model,
+    the fallback parser, and amount validation all see the same number.
+    """
+    def _repl(match: re.Match) -> str:
+        base = float(match.group(1).replace(",", ""))
+        scale = _SCALE_WORDS[match.group(2).lower()]
+        return str(int(round(base * scale)))
+
+    return _SHORTHAND_RX.sub(_repl, text)
 
 
 _LLM_DEADLINE = float(OLLAMA_TIMEOUT)
@@ -326,6 +368,35 @@ def _item_for_amount(user_input: str, amount: float) -> str | None:
     return item.lower() if item else None
 
 
+_GIFT_INCOME_WORDS = (
+    "gift", "gifted", "present", "eidi", "eidy", "refund", "refunded",
+    "cashback", "cash back", "reimburse", "reimbursed", "reimbursement",
+)
+_SALARY_WORDS = ("salary", "paycheck", "pay check", "wages", "monthly pay")
+_FREELANCE_WORDS = (
+    "freelance", "client", "project payment", "upwork", "fiverr", "commission",
+)
+
+
+def _correct_income_category(row: dict, user_input: str) -> str:
+    """Fix obvious income mis-categorization the small model gets wrong.
+
+    Gifts/refunds/cashback are not Salary or Freelance income; the model often
+    guesses Freelance. Only override on a clear keyword signal so genuine model
+    choices are preserved.
+    """
+    if str(row.get("type", "")).strip().lower() != "income":
+        return row.get("category", "Other")
+    text = user_input.lower()
+    if any(word in text for word in _SALARY_WORDS):
+        return "Salary"
+    if any(word in text for word in _FREELANCE_WORDS):
+        return "Freelance"
+    if any(word in text for word in _GIFT_INCOME_WORDS):
+        return "Other"
+    return row.get("category", "Other")
+
+
 def _polish_description(row: dict, user_input: str) -> str:
     """Keep descriptions grounded in the original sentence after LLM extraction."""
     place = _place_from_input(user_input)
@@ -354,6 +425,7 @@ def _complete_transaction(item: dict, confidence: str, now: datetime, user_input
     completed["type"] = str(completed.get("type", "")).strip().lower()
     completed["amount"] = float(completed.get("amount"))
     completed["category"] = str(completed.get("category", "Other")).strip() or "Other"
+    completed["category"] = _correct_income_category(completed, user_input)
     completed["description"] = str(completed.get("description", "")).strip()
     completed["date"] = _date_for_amount(user_input, completed["amount"], now) or _default_date(completed.get("date"), now)
     completed["time"] = _default_time(completed.get("time"), now)
@@ -390,6 +462,14 @@ def _input_numeric_amounts(user_input: str) -> set[float]:
     return amounts
 
 
+def _has_amount_language(user_input: str) -> bool:
+    """Return True when the user said an amount as digits or words."""
+    if _input_numeric_amounts(user_input):
+        return True
+    words = set(re.findall(r"\b[a-z]+\b", user_input.lower()))
+    return bool(words & _AMOUNT_WORDS)
+
+
 def _payload_amounts(result: dict) -> list[float]:
     """Return all amounts from a single or multi-transaction payload."""
     rows = result.get("transactions") if isinstance(result.get("transactions"), list) else [result]
@@ -405,9 +485,11 @@ def _payload_amounts(result: dict) -> list[float]:
 def _amounts_supported_by_input(result: dict, user_input: str) -> bool:
     """Reject model/fallback rows that invent or duplicate numeric amounts."""
     input_amounts = _input_numeric_amounts(user_input)
-    if not input_amounts:
-        return True
     output_amounts = _payload_amounts(result)
+    if not input_amounts:
+        # Word amounts such as "three thousand" are allowed through the LLM,
+        # but unrelated text must not become a fake transaction.
+        return bool(output_amounts) and _has_amount_language(user_input)
     return bool(output_amounts) and all(amount in input_amounts for amount in output_amounts)
 
 
@@ -478,14 +560,54 @@ def warmup_async() -> None:
     threading.Thread(target=_warmup, daemon=True).start()
 
 
+# Loan/shared signal words. Deliberately excludes bare "gave me"/"sent me"/"paid me"
+# — those are income, not loans, and would make the model hallucinate a lender.
+_FINANCE_SIGNAL_RX = re.compile(
+    r"\b(lent|loaned|loan|borrow(?:ed|ing)?|owe[ds]?|owes|repaid|repay|"
+    r"settle[ds]?|clear(?:ed)?|split|shared?|share|each|everyone|between|evenly|"
+    r"half|percent|back)\b|%",
+    re.IGNORECASE,
+)
+
+
+def _looks_like_finance_intent(text: str) -> bool:
+    """Cheap gate so the LLM finance parser only runs on loan/shared-looking text."""
+    return bool(_FINANCE_SIGNAL_RX.search(text))
+
+
+def _llm_special_intent(user_input: str) -> dict | None:
+    """Use the local model to extract a loan/shared plan from natural language."""
+    from voicetrack.finance_intents import build_plan_from_spec
+
+    for model in _candidate_models():
+        spec = _call_deadline(model, FINANCE_INTENT_SYSTEM_PROMPT, _runtime_context(user_input))
+        if spec is None:
+            continue
+        # Pass the original text so invented (hallucinated) names are rejected.
+        plan = build_plan_from_spec(spec, text=user_input)
+        if plan:
+            return plan
+    return None
+
+
 def extract(user_input: str) -> dict:
     """Extract one or more transactions from natural language."""
     from voicetrack import fallback
     from voicetrack.finance_intents import parse_special_intent
 
+    user_input = _expand_shorthand_amounts(user_input)
+
+    # 1. Fast deterministic loan/shared parser (works fully offline).
     special = parse_special_intent(user_input)
     if special:
         return special
+
+    # 2. Natural-language loan/shared parser via the local model, for phrasings the
+    #    regex parser misses. Python still computes all split/loan math.
+    if _ollama_reachable() and _looks_like_finance_intent(user_input):
+        llm_plan = _llm_special_intent(user_input)
+        if llm_plan:
+            return llm_plan
 
     if _ollama_reachable():
         last_extractor_result: dict | None = None
@@ -508,7 +630,7 @@ def extract(user_input: str) -> dict:
 
     result = fallback.parse(user_input)
     _mark_confidence(result, "low")
-    if not _amounts_supported_by_input(result, user_input):
+    if not _safe_payload(result, user_input):
         return {"error": "Could not understand input. Please rephrase."}
     return result
 
@@ -520,6 +642,7 @@ def normalize_transactions(result: dict) -> list[dict]:
         "loan_taken",
         "loan_repayment_received",
         "loan_repayment_made",
+        "loan_clear",
         "shared_expense",
     }:
         return []
